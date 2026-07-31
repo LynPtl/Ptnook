@@ -255,6 +255,7 @@ function renderPage() {
     sendMessage();
   };
   $("text").addEventListener("keydown", function (e) {
+    if (e.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
