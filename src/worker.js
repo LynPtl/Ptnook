@@ -57,6 +57,24 @@ export class ChatRoom extends DurableObject {
 
 export default {
   async fetch(request, env, ctx) {
-    return new Response("ok");
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/room\/([^/]+)$/);
+
+    if (match) {
+      if (request.headers.get("Upgrade") !== "websocket") {
+        return new Response("expected websocket", { status: 426 });
+      }
+      const roomName = decodeURIComponent(match[1]).slice(0, 32);
+      const stub = env.CHAT_ROOM.getByName(roomName);
+      return stub.fetch(request);
+    }
+
+    return new Response(renderPage(), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   },
 };
+
+function renderPage() {
+  return "<!doctype html><title>chatroom</title><p>placeholder</p>";
+}

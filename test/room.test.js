@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 function connect(room, nick) {
@@ -38,14 +38,6 @@ describe("ChatRoom", () => {
     const a = await openWS("r2", "A");
     const b = await openWS("r2", "B");
     await new Promise((r) => setTimeout(r, 100));
-    const got = nextMessage(b).then((m) => m);
-    a.send(JSON.stringify({ type: "chat", text: "hello" }));
-    // 轮询等待 b 收到 chat
-    let received = null;
-    for (let i = 0; i < 20 && !received; i++) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    // 简化断言：直接监听
     const chat = await new Promise((resolve) => {
       b.addEventListener("message", (e) => {
         const m = JSON.parse(e.data);
@@ -53,8 +45,8 @@ describe("ChatRoom", () => {
       });
       a.send(JSON.stringify({ type: "chat", text: "hello2" }));
     });
-    expect(chat.nick).toBeDefined();
-    expect(chat.text).toBeDefined();
+    expect(chat.nick).toBe("A");
+    expect(chat.text).toBe("hello2");
     a.close();
     b.close();
   });
@@ -63,8 +55,17 @@ describe("ChatRoom", () => {
     const a = await openWS("r3", "A");
     a.send("garbage-not-json");
     a.send(JSON.stringify({ type: "chat", text: "   " }));
+    const b = await openWS("r3", "B");
     await new Promise((r) => setTimeout(r, 100));
-    expect(true).toBe(true); // 未抛错即通过
+    const chat = await new Promise((resolve) => {
+      b.addEventListener("message", (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "chat") resolve(m);
+      });
+      a.send(JSON.stringify({ type: "chat", text: "ok" }));
+    });
+    expect(chat.text).toBe("ok");
     a.close();
+    b.close();
   });
 });
