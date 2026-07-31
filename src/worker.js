@@ -198,7 +198,7 @@ function renderPage() {
     if (idx < 0) return false;
     var div = document.createElement("div");
     div.className = "divider";
-    div.textContent = "—— 以上是新消息 ——";
+    div.textContent = "—— 以下是新消息 ——";
     els[idx].parentNode.insertBefore(div, els[idx]);
     div.scrollIntoView({ block: "center" });
     return true;
