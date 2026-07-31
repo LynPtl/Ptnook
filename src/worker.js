@@ -158,7 +158,7 @@ function renderPage() {
   </div>
 <script>
 (function () {
-  var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null;
+  var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false;
   var $ = function (id) { return document.getElementById(id); };
 
   // 与 src/messages.js 的 firstUnreadIndex 保持一致（浏览器内联脚本无法 import，故镜像一份）
@@ -236,6 +236,7 @@ function renderPage() {
     if (!room) { $("room").focus(); return; }
     teardown();
     manualClose = false;
+    pendingDivider = true;
     reconnectDelay = 500;
     $("join").style.display = "none";
     $("chat").style.display = "flex";
@@ -269,7 +270,12 @@ function renderPage() {
       else if (m.type === "history") {
         $("messages").innerHTML = "";
         (m.items || []).forEach(function (it) { addChat(it.nick, it.text, it.ts); });
-        if (!showDivider(lsGet())) scrollToBottom();
+        if (pendingDivider) {
+          pendingDivider = false;
+          if (!showDivider(lsGet())) scrollToBottom();
+        } else {
+          scrollToBottom();
+        }
       }
     };
     ws.onclose = function () {
