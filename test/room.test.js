@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 function connect(room, nick) {
@@ -116,5 +116,53 @@ describe("ChatRoom 历史", () => {
     expect(hist.items[0].text).toBe("msg-5");
     a.close();
     b.close();
+  });
+});
+
+describe("ChatRoom 空房清除", () => {
+  it("alarm 在空房时清除历史", async () => {
+    const id = env.CHAT_ROOM.idFromName("alarm-empty");
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.put("history", [{ nick: "A", text: "x", ts: 1 }]);
+      await instance.alarm();
+      expect(await state.storage.get("history")).toBeUndefined();
+    });
+  });
+
+  it("alarm 在有人在线时保留历史", async () => {
+    const { ws } = await openWSCollect("alarm-busy", "A");
+    await new Promise((r) => setTimeout(r, 120));
+    const id = env.CHAT_ROOM.idFromName("alarm-busy");
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.put("history", [{ nick: "A", text: "keep", ts: 1 }]);
+      await instance.alarm();
+      const h = await state.storage.get("history");
+      expect(h).toBeDefined();
+      expect(h.length).toBe(1);
+    });
+    ws.close();
+  });
+
+  it("空房后设清除闹钟，重新进入则取消", async () => {
+    const { ws } = await openWSCollect("alarm-set", "A");
+    await new Promise((r) => setTimeout(r, 120));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const id = env.CHAT_ROOM.idFromName("alarm-set");
+    const stub = env.CHAT_ROOM.get(id);
+    let scheduled;
+    await runInDurableObject(stub, async (instance, state) => {
+      scheduled = await state.storage.getAlarm();
+    });
+    expect(scheduled).not.toBeNull();
+
+    const { ws: ws2 } = await openWSCollect("alarm-set", "B");
+    await new Promise((r) => setTimeout(r, 120));
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+    ws2.close();
   });
 });

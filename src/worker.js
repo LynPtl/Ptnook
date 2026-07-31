@@ -18,6 +18,9 @@ export class ChatRoom extends DurableObject {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ nick });
 
+    // 有人进来：取消待定的空房清除闹钟
+    await this.ctx.storage.deleteAlarm();
+
     // 先给新连接单独推送历史，再广播加入
     const history = (await this.ctx.storage.get("history")) || [];
     server.send(historyMsg(history));
@@ -50,10 +53,19 @@ export class ChatRoom extends DurableObject {
     const remaining = this.ctx.getWebSockets().filter((s) => s !== ws).length;
     this.broadcast(systemMsg(`${nick} 离开了房间`, ts));
     this.broadcast(presenceMsg(remaining));
+    if (remaining === 0) {
+      await this.ctx.storage.setAlarm(Date.now() + 30 * 60 * 1000);
+    }
   }
 
   async webSocketError(ws, error) {
     await this.webSocketClose(ws, 1006, "error", false);
+  }
+
+  async alarm() {
+    if (this.ctx.getWebSockets().length === 0) {
+      await this.ctx.storage.deleteAll();
+    }
   }
 
   async appendHistory(item) {
