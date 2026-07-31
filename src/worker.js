@@ -116,7 +116,7 @@ function renderPage() {
   body { margin: 0; font-family: -apple-system, system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; }
   #join { margin: auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.1); display: flex; flex-direction: column; gap: 12px; width: 280px; }
   #join h1 { font-size: 18px; margin: 0 0 8px; }
-  #join input, #composer input { padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 15px; }
+  #join input, #composer textarea { padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 15px; }
   button { padding: 10px 16px; border: 0; border-radius: 8px; background: #2f6feb; color: #fff; font-size: 15px; cursor: pointer; }
   button:hover { background: #2559c9; }
   #chat { display: none; flex-direction: column; height: 100%; }
@@ -126,9 +126,11 @@ function renderPage() {
   #messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .msg { margin: 6px 0; word-break: break-word; }
   .msg .nick { font-weight: 600; margin-right: 6px; }
+  .msg .time { color: #bbb; font-size: 12px; margin-right: 6px; }
+  .msg .body { white-space: pre-wrap; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
-  #composer { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #eee; }
-  #composer input { flex: 1; }
+  #composer { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #eee; align-items: flex-end; }
+  #composer textarea { flex: 1; resize: none; height: 40px; max-height: 120px; line-height: 20px; font-family: inherit; }
   #status { font-size: 12px; color: #c00; padding: 0 16px; }
 </style>
 </head>
@@ -148,7 +150,7 @@ function renderPage() {
     <div id="status"></div>
     <div id="messages"></div>
     <form id="composer">
-      <input id="text" placeholder="说点什么…" maxlength="2000" autocomplete="off">
+      <textarea id="text" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" maxlength="2000" rows="1"></textarea>
       <button type="submit">发送</button>
     </form>
   </div>
@@ -156,6 +158,21 @@ function renderPage() {
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false;
   var $ = function (id) { return document.getElementById(id); };
+
+  function atBottom() {
+    var box = $("messages");
+    return box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  }
+  function scrollToBottom() {
+    var box = $("messages");
+    box.scrollTop = box.scrollHeight;
+  }
+  function fmtTime(ts) {
+    var d = new Date(ts);
+    var h = ("0" + d.getHours()).slice(-2);
+    var m = ("0" + d.getMinutes()).slice(-2);
+    return h + ":" + m;
+  }
 
   $("enter").onclick = function () {
     room = $("room").value.trim();
@@ -184,9 +201,13 @@ function renderPage() {
     ws.onmessage = function (e) {
       var m;
       try { m = JSON.parse(e.data); } catch (_) { return; }
-      if (m.type === "chat") addChat(m.nick, m.text);
+      if (m.type === "chat") addChat(m.nick, m.text, m.ts);
       else if (m.type === "system") addSystem(m.text);
       else if (m.type === "presence") $("countLabel").textContent = "在线 " + m.count + " 人";
+      else if (m.type === "history") {
+        (m.items || []).forEach(function (it) { addChat(it.nick, it.text, it.ts); });
+        scrollToBottom();
+      }
     };
     ws.onclose = function () {
       if (manualClose) return;
@@ -196,36 +217,49 @@ function renderPage() {
     };
   }
 
-  function addChat(n, t) {
+  function addChat(n, t, ts) {
+    var wasBottom = atBottom();
     var div = document.createElement("div");
     div.className = "msg";
     var s = document.createElement("span");
     s.className = "nick";
     s.textContent = n + "：";
+    var tm = document.createElement("span");
+    tm.className = "time";
+    tm.textContent = fmtTime(ts);
     var b = document.createElement("span");
+    b.className = "body";
     b.textContent = t;
-    div.appendChild(s); div.appendChild(b);
-    append(div);
+    div.appendChild(s); div.appendChild(tm); div.appendChild(b);
+    $("messages").appendChild(div);
+    if (wasBottom) scrollToBottom();
   }
   function addSystem(t) {
+    var wasBottom = atBottom();
     var div = document.createElement("div");
     div.className = "sys";
     div.textContent = t;
-    append(div);
-  }
-  function append(el) {
-    var box = $("messages");
-    box.appendChild(el);
-    box.scrollTop = box.scrollHeight;
+    $("messages").appendChild(div);
+    if (wasBottom) scrollToBottom();
   }
 
-  $("composer").onsubmit = function (e) {
-    e.preventDefault();
+  function sendMessage() {
     var t = $("text").value.trim();
     if (!t || !ws || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ type: "chat", text: t }));
     $("text").value = "";
+  }
+
+  $("composer").onsubmit = function (e) {
+    e.preventDefault();
+    sendMessage();
   };
+  $("text").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
 })();
 </script>
 </body>
