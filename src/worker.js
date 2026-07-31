@@ -130,6 +130,7 @@ function renderPage() {
   .msg .time { color: #bbb; font-size: 12px; margin-right: 6px; }
   .msg .body { white-space: pre-wrap; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
+  .divider { color: #e0533d; font-size: 12px; text-align: center; margin: 12px 0; border-top: 1px solid #f0c9c2; padding-top: 6px; }
   #composer { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #eee; align-items: flex-end; }
   #composer textarea { flex: 1; resize: none; height: 40px; max-height: 120px; line-height: 20px; font-family: inherit; }
   #status { font-size: 12px; color: #c00; padding: 0 16px; }
@@ -159,6 +160,49 @@ function renderPage() {
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null;
   var $ = function (id) { return document.getElementById(id); };
+
+  // 与 src/messages.js 的 firstUnreadIndex 保持一致（浏览器内联脚本无法 import，故镜像一份）
+  function firstUnreadIndex(items, lastReadTs) {
+    if (!lastReadTs) return -1;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].ts > lastReadTs) return i;
+    }
+    return -1;
+  }
+  function lsKey() { return "ptnook:lastread:" + room; }
+  function lsGet() {
+    try { var v = localStorage.getItem(lsKey()); return v ? Number(v) : null; } catch (_) { return null; }
+  }
+  function lsSet(ts) {
+    try { if (ts) localStorage.setItem(lsKey(), String(ts)); } catch (_) {}
+  }
+  function msgEls() {
+    return Array.prototype.slice.call($("messages").querySelectorAll(".msg"));
+  }
+  function lastMsgTs() {
+    var els = msgEls();
+    if (!els.length) return null;
+    return Number(els[els.length - 1].dataset.ts);
+  }
+  function markRead() {
+    var ts = lastMsgTs();
+    if (ts) lsSet(ts);
+  }
+  // 移除旧分隔线，按 lastReadTs 在第一条未读前插入新分隔线；返回是否插入
+  function showDivider(lastReadTs) {
+    var old = $("messages").querySelector(".divider");
+    if (old) old.parentNode.removeChild(old);
+    var els = msgEls();
+    var items = els.map(function (el) { return { ts: Number(el.dataset.ts) }; });
+    var idx = firstUnreadIndex(items, lastReadTs);
+    if (idx < 0) return false;
+    var div = document.createElement("div");
+    div.className = "divider";
+    div.textContent = "—— 以上是新消息 ——";
+    els[idx].parentNode.insertBefore(div, els[idx]);
+    div.scrollIntoView({ block: "center" });
+    return true;
+  }
 
   // 断开当前连接并清理，确保同一时刻只有一个活动连接
   function teardown() {
@@ -201,6 +245,7 @@ function renderPage() {
 
   $("leave").onclick = function () {
     manualClose = true;
+    markRead();
     teardown();
     $("chat").style.display = "none";
     $("join").style.display = "flex";
@@ -224,7 +269,7 @@ function renderPage() {
       else if (m.type === "history") {
         $("messages").innerHTML = "";
         (m.items || []).forEach(function (it) { addChat(it.nick, it.text, it.ts); });
-        scrollToBottom();
+        if (!showDivider(lsGet())) scrollToBottom();
       }
     };
     ws.onclose = function () {
@@ -242,6 +287,7 @@ function renderPage() {
     var wasBottom = atBottom();
     var div = document.createElement("div");
     div.className = "msg";
+    div.dataset.ts = ts;
     var head = document.createElement("div");
     head.className = "head";
     var s = document.createElement("span");
@@ -284,6 +330,16 @@ function renderPage() {
       e.preventDefault();
       sendMessage();
     }
+  });
+
+  window.addEventListener("blur", function () {
+    if (room) markRead();
+  });
+  window.addEventListener("focus", function () {
+    if (room) showDivider(lsGet());
+  });
+  window.addEventListener("beforeunload", function () {
+    if (room) markRead();
   });
 })();
 </script>
