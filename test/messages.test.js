@@ -6,6 +6,7 @@ import {
   chatMsg,
   systemMsg,
   presenceMsg,
+  historyMsg,
 } from "../src/messages.js";
 
 describe("sanitizeNick", () => {
@@ -50,5 +51,15 @@ describe("builders", () => {
   });
   it("presenceMsg", () => {
     expect(JSON.parse(presenceMsg(3))).toEqual({ type: "presence", count: 3 });
+  });
+});
+
+describe("historyMsg", () => {
+  it("构造 history 消息", () => {
+    const items = [{ nick: "小明", text: "hi", ts: 5 }];
+    expect(JSON.parse(historyMsg(items))).toEqual({ type: "history", items });
+  });
+  it("空历史 items 为空数组", () => {
+    expect(JSON.parse(historyMsg([]))).toEqual({ type: "history", items: [] });
   });
 });

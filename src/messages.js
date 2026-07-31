@@ -38,3 +38,7 @@ export function systemMsg(text, ts) {
 export function presenceMsg(count) {
   return JSON.stringify({ type: "presence", count });
 }
+
+export function historyMsg(items) {
+  return JSON.stringify({ type: "history", items });
+}
