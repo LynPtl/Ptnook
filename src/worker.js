@@ -124,7 +124,8 @@ function renderPage() {
   header .room { font-weight: 600; }
   header .count { color: #888; font-size: 13px; }
   #messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
-  .msg { margin: 6px 0; word-break: break-word; }
+  .msg { margin: 10px 0; word-break: break-word; }
+  .msg .head { margin-bottom: 2px; }
   .msg .nick { font-weight: 600; margin-right: 6px; }
   .msg .time { color: #bbb; font-size: 12px; margin-right: 6px; }
   .msg .body { white-space: pre-wrap; }
@@ -241,16 +242,19 @@ function renderPage() {
     var wasBottom = atBottom();
     var div = document.createElement("div");
     div.className = "msg";
+    var head = document.createElement("div");
+    head.className = "head";
     var s = document.createElement("span");
     s.className = "nick";
-    s.textContent = n + "：";
+    s.textContent = n;
     var tm = document.createElement("span");
     tm.className = "time";
     tm.textContent = fmtTime(ts);
-    var b = document.createElement("span");
+    head.appendChild(s); head.appendChild(tm);
+    var b = document.createElement("div");
     b.className = "body";
     b.textContent = t;
-    div.appendChild(s); div.appendChild(tm); div.appendChild(b);
+    div.appendChild(head); div.appendChild(b);
     $("messages").appendChild(div);
     if (wasBottom) scrollToBottom();
   }
