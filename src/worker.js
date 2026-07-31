@@ -156,8 +156,18 @@ function renderPage() {
   </div>
 <script>
 (function () {
-  var room, nick, ws, reconnectDelay = 500, manualClose = false;
+  var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null;
   var $ = function (id) { return document.getElementById(id); };
+
+  // 断开当前连接并清理，确保同一时刻只有一个活动连接
+  function teardown() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(); } catch (_) {}
+      ws = null;
+    }
+  }
 
   function atBottom() {
     var box = $("messages");
@@ -179,7 +189,9 @@ function renderPage() {
     room = $("room").value.trim();
     nick = $("nick").value.trim();
     if (!room) { $("room").focus(); return; }
+    teardown();
     manualClose = false;
+    reconnectDelay = 500;
     $("join").style.display = "none";
     $("chat").style.display = "flex";
     $("roomLabel").textContent = "房间：" + room;
@@ -188,13 +200,16 @@ function renderPage() {
 
   $("leave").onclick = function () {
     manualClose = true;
-    if (ws) ws.close();
+    teardown();
     $("chat").style.display = "none";
     $("join").style.display = "flex";
     $("messages").innerHTML = "";
   };
 
   function connect() {
+    // 建立新连接前，先清掉任何遗留的连接/重连定时器
+    teardown();
+    if (manualClose) return;
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     var url = proto + "//" + location.host + "/room/" + encodeURIComponent(room) + "?nick=" + encodeURIComponent(nick);
     ws = new WebSocket(url);
@@ -212,11 +227,14 @@ function renderPage() {
       }
     };
     ws.onclose = function () {
+      ws = null;
       if (manualClose) return;
       $("status").textContent = "连接断开，重连中…";
-      setTimeout(connect, reconnectDelay);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 8000);
     };
+    ws.onerror = function () { try { ws.close(); } catch (_) {} };
   }
 
   function addChat(n, t, ts) {
