@@ -14,6 +14,16 @@ async function openWS(room, nick) {
   return ws;
 }
 
+async function openWSCollect(room, nick) {
+  const url = `https://example.com/room/${room}?nick=${encodeURIComponent(nick)}`;
+  const res = await SELF.fetch(url, { headers: { Upgrade: "websocket" } });
+  const ws = res.webSocket;
+  const msgs = [];
+  ws.addEventListener("message", (e) => { msgs.push(JSON.parse(e.data)); });
+  ws.accept();
+  return { ws, msgs };
+}
+
 describe("ChatRoom", () => {
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
@@ -59,6 +69,51 @@ describe("ChatRoom", () => {
       a.send(JSON.stringify({ type: "chat", text: "ok" }));
     });
     expect(chat.text).toBe("ok");
+    a.close();
+    b.close();
+  });
+});
+
+describe("ChatRoom 历史", () => {
+  it("新连接先收到 history 再收到加入 system", async () => {
+    const { ws, msgs } = await openWSCollect("hist-order", "A");
+    await new Promise((r) => setTimeout(r, 150));
+    const historyIdx = msgs.findIndex((m) => m.type === "history");
+    const joinIdx = msgs.findIndex((m) => m.type === "system");
+    expect(historyIdx).toBeGreaterThanOrEqual(0);
+    expect(joinIdx).toBeGreaterThan(historyIdx);
+    expect(Array.isArray(msgs[historyIdx].items)).toBe(true);
+    ws.close();
+  });
+
+  it("后进者能在 history 中看到先前的消息", async () => {
+    const a = await openWS("hist-see", "A");
+    await new Promise((r) => setTimeout(r, 100));
+    a.send(JSON.stringify({ type: "chat", text: "old-msg" }));
+    await new Promise((r) => setTimeout(r, 150));
+    const { ws: b, msgs } = await openWSCollect("hist-see", "B");
+    await new Promise((r) => setTimeout(r, 150));
+    const hist = msgs.find((m) => m.type === "history");
+    expect(hist).toBeDefined();
+    expect(hist.items.some((it) => it.text === "old-msg" && it.nick === "A")).toBe(true);
+    a.close();
+    b.close();
+  });
+
+  it("history 上限 50 条且保留最新", async () => {
+    const a = await openWS("hist-cap", "A");
+    await new Promise((r) => setTimeout(r, 100));
+    for (let i = 0; i < 55; i++) {
+      a.send(JSON.stringify({ type: "chat", text: "msg-" + i }));
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    const { ws: b, msgs } = await openWSCollect("hist-cap", "B");
+    await new Promise((r) => setTimeout(r, 200));
+    const hist = msgs.find((m) => m.type === "history");
+    expect(hist.items.length).toBe(50);
+    expect(hist.items[49].text).toBe("msg-54");
+    expect(hist.items[0].text).toBe("msg-5");
     a.close();
     b.close();
   });

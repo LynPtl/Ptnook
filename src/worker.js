@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg } from "./messages.js";
+import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -18,6 +18,10 @@ export class ChatRoom extends DurableObject {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ nick });
 
+    // 先给新连接单独推送历史，再广播加入
+    const history = (await this.ctx.storage.get("history")) || [];
+    server.send(historyMsg(history));
+
     const ts = Date.now();
     this.broadcast(systemMsg(`${nick} 加入了房间`, ts));
     this.broadcast(presenceMsg(this.ctx.getWebSockets().length));
@@ -31,7 +35,9 @@ export class ChatRoom extends DurableObject {
     if (!parsed) return;
     const att = ws.deserializeAttachment() || {};
     const nick = att.nick || "访客";
-    this.broadcast(chatMsg(nick, parsed.text, Date.now()));
+    const ts = Date.now();
+    this.broadcast(chatMsg(nick, parsed.text, ts));
+    await this.appendHistory({ nick, text: parsed.text, ts });
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
@@ -48,6 +54,13 @@ export class ChatRoom extends DurableObject {
 
   async webSocketError(ws, error) {
     await this.webSocketClose(ws, 1006, "error", false);
+  }
+
+  async appendHistory(item) {
+    const history = (await this.ctx.storage.get("history")) || [];
+    history.push(item);
+    if (history.length > 50) history.splice(0, history.length - 50);
+    await this.ctx.storage.put("history", history);
   }
 
   broadcast(data) {
