@@ -64,7 +64,7 @@ export class ChatRoom extends DurableObject {
 
   async alarm() {
     if (this.ctx.getWebSockets().length === 0) {
-      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.delete("history");
     }
   }
 
@@ -168,6 +168,7 @@ function renderPage() {
     box.scrollTop = box.scrollHeight;
   }
   function fmtTime(ts) {
+    if (!ts) return "";
     var d = new Date(ts);
     var h = ("0" + d.getHours()).slice(-2);
     var m = ("0" + d.getMinutes()).slice(-2);
@@ -205,6 +206,7 @@ function renderPage() {
       else if (m.type === "system") addSystem(m.text);
       else if (m.type === "presence") $("countLabel").textContent = "在线 " + m.count + " 人";
       else if (m.type === "history") {
+        $("messages").innerHTML = "";
         (m.items || []).forEach(function (it) { addChat(it.nick, it.text, it.ts); });
         scrollToBottom();
       }
