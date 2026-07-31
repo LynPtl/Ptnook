@@ -14,17 +14,11 @@ async function openWS(room, nick) {
   return ws;
 }
 
-function nextMessage(ws) {
-  return new Promise((resolve) => {
-    ws.addEventListener("message", (e) => resolve(JSON.parse(e.data)), { once: true });
-  });
-}
-
 describe("ChatRoom", () => {
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];
-    a.addEventListener("message", (e) => msgs.push(JSON.parse(e.data)));
+    a.addEventListener("message", (e) => { msgs.push(JSON.parse(e.data)); });
     await new Promise((r) => setTimeout(r, 100));
     const sys = msgs.find((m) => m.type === "system");
     const pres = msgs.find((m) => m.type === "presence");

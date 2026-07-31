@@ -46,6 +46,10 @@ export class ChatRoom extends DurableObject {
     this.broadcast(presenceMsg(remaining));
   }
 
+  async webSocketError(ws, error) {
+    await this.webSocketClose(ws, 1006, "error", false);
+  }
+
   broadcast(data) {
     for (const ws of this.ctx.getWebSockets()) {
       try {
@@ -114,6 +118,7 @@ function renderPage() {
     <header>
       <span class="room" id="roomLabel"></span>
       <span class="count" id="countLabel"></span>
+      <button id="leave">离开</button>
     </header>
     <div id="status"></div>
     <div id="messages"></div>
@@ -131,10 +136,19 @@ function renderPage() {
     room = $("room").value.trim();
     nick = $("nick").value.trim();
     if (!room) { $("room").focus(); return; }
+    manualClose = false;
     $("join").style.display = "none";
     $("chat").style.display = "flex";
     $("roomLabel").textContent = "房间：" + room;
     connect();
+  };
+
+  $("leave").onclick = function () {
+    manualClose = true;
+    if (ws) ws.close();
+    $("chat").style.display = "none";
+    $("join").style.display = "flex";
+    $("messages").innerHTML = "";
   };
 
   function connect() {
