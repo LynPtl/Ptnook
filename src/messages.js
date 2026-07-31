@@ -42,3 +42,11 @@ export function presenceMsg(count) {
 export function historyMsg(items) {
   return JSON.stringify({ type: "history", items });
 }
+
+export function firstUnreadIndex(items, lastReadTs) {
+  if (!lastReadTs) return -1;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].ts > lastReadTs) return i;
+  }
+  return -1;
+}

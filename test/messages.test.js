@@ -7,6 +7,7 @@ import {
   systemMsg,
   presenceMsg,
   historyMsg,
+  firstUnreadIndex,
 } from "../src/messages.js";
 
 describe("sanitizeNick", () => {
@@ -61,5 +62,28 @@ describe("historyMsg", () => {
   });
   it("空历史 items 为空数组", () => {
     expect(JSON.parse(historyMsg([]))).toEqual({ type: "history", items: [] });
+  });
+});
+
+describe("firstUnreadIndex", () => {
+  const items = [{ ts: 10 }, { ts: 20 }, { ts: 30 }];
+  it("返回第一条晚于 lastRead 的索引", () => {
+    expect(firstUnreadIndex(items, 15)).toBe(1);
+    expect(firstUnreadIndex(items, 20)).toBe(2); // 等于算已读
+  });
+  it("全部已读返回 -1", () => {
+    expect(firstUnreadIndex(items, 30)).toBe(-1);
+    expect(firstUnreadIndex(items, 99)).toBe(-1);
+  });
+  it("lastRead 为空返回 -1", () => {
+    expect(firstUnreadIndex(items, null)).toBe(-1);
+    expect(firstUnreadIndex(items, undefined)).toBe(-1);
+    expect(firstUnreadIndex(items, 0)).toBe(-1);
+  });
+  it("空列表返回 -1", () => {
+    expect(firstUnreadIndex([], 5)).toBe(-1);
+  });
+  it("全部都新则返回 0", () => {
+    expect(firstUnreadIndex(items, 5)).toBe(0);
   });
 });
