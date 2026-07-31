@@ -1,0 +1,11 @@
+name = "chatroom"
+main = "src/worker.js"
+compatibility_date = "2026-04-21"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
