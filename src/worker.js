@@ -424,6 +424,12 @@ function renderPage() {
   .msg .body { white-space: pre-wrap; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
   .divider { color: #e0533d; font-size: 12px; text-align: center; margin: 12px 0; border-top: 1px solid #f0c9c2; padding-top: 6px; }
+  #ddzbar { border-top: 1px solid #eee; background: #fff; padding: 8px 12px; display: none; }
+  #ddzbar .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #ddzbar .btns button { padding: 6px 10px; font-size: 14px; }
+  #ddzhand { display: flex; flex-wrap: wrap; gap: 4px; }
+  #ddzhand .card { border: 1px solid #ccc; border-radius: 6px; padding: 4px 8px; font-size: 15px; cursor: pointer; user-select: none; background: #fafafa; }
+  #ddzhand .card.sel { background: #2f6feb; color: #fff; border-color: #2f6feb; transform: translateY(-4px); }
   #composer { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #eee; align-items: flex-end; }
   #composer textarea { flex: 1; resize: none; height: 40px; max-height: 120px; line-height: 20px; font-family: inherit; }
   #status { font-size: 12px; color: #c00; padding: 0 16px; }
@@ -444,6 +450,10 @@ function renderPage() {
     </header>
     <div id="status"></div>
     <div id="messages"></div>
+    <div id="ddzbar">
+      <div class="btns" id="ddzbtns"></div>
+      <div id="ddzhand"></div>
+    </div>
     <form id="composer">
       <textarea id="text" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" maxlength="2000" rows="1"></textarea>
       <button type="submit">发送</button>
@@ -570,6 +580,9 @@ function renderPage() {
           scrollToBottom();
         }
       }
+      else if (m.type === "ddz_state") renderDdz(m);
+      else if (m.type === "ddz_hand") { ddz.hand = m.cards || []; ddz.selected = {}; renderHand(); }
+      else if (m.type === "ddz_error") addSystem("⚠️ " + m.text);
     };
     ws.onclose = function () {
       ws = null;
@@ -580,6 +593,74 @@ function renderPage() {
       reconnectDelay = Math.min(reconnectDelay * 2, 8000);
     };
     ws.onerror = function () { try { ws.close(); } catch (_) {} };
+  }
+
+  var ddz = { phase: "none", hand: [], selected: {} };
+
+  function ddzSend(type, extra) {
+    if (!ws || ws.readyState !== 1) return;
+    var o = { type: type };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    ws.send(JSON.stringify(o));
+  }
+
+  function renderDdz(state) {
+    ddz.phase = state.phase;
+    var bar = $("ddzbar");
+    if (state.phase === "none" || !state.phase) { bar.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.selected = {}; return; }
+    bar.style.display = "block";
+    var me = nick;
+    var mySeat = (state.seats || []).some(function (s) { return s.nick === me; });
+    var btns = $("ddzbtns");
+    btns.innerHTML = "";
+    function addBtn(label, fn) {
+      var b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = fn;
+      btns.appendChild(b);
+    }
+    if (state.phase === "waiting") {
+      if (!mySeat) addBtn("加入牌桌", function () { ddzSend("ddz_join"); });
+      addBtn("取消", function () { ddzSend("ddz_cancel"); });
+    } else if (state.phase === "bidding") {
+      if (state.current === me) {
+        addBtn("叫1", function () { ddzSend("ddz_bid", { value: 1 }); });
+        addBtn("叫2", function () { ddzSend("ddz_bid", { value: 2 }); });
+        addBtn("叫3", function () { ddzSend("ddz_bid", { value: 3 }); });
+        addBtn("不叫", function () { ddzSend("ddz_bid", { value: 0 }); });
+      }
+    } else if (state.phase === "playing") {
+      if (state.current === me) {
+        addBtn("出牌", playSelected);
+        addBtn("过", function () { ddzSend("ddz_pass"); });
+      }
+      addBtn("退出牌局", function () { ddzSend("ddz_disband"); });
+    } else if (state.phase === "settled") {
+      addBtn("再来一局", function () { ddzSend("ddz_again"); });
+      addBtn("散桌", function () { ddzSend("ddz_disband"); });
+    }
+    renderHand();
+  }
+
+  function renderHand() {
+    var box = $("ddzhand");
+    box.innerHTML = "";
+    ddz.hand.forEach(function (c, i) {
+      var el = document.createElement("div");
+      el.className = "card" + (ddz.selected[i] ? " sel" : "");
+      el.textContent = cardLabel(c);
+      el.onclick = function () { ddz.selected[i] = !ddz.selected[i]; el.classList.toggle("sel"); };
+      box.appendChild(el);
+    });
+  }
+  function cardLabel(c) { return c === "x" ? "小王" : c === "X" ? "大王" : c; }
+
+  function playSelected() {
+    var cards = [];
+    ddz.hand.forEach(function (c, i) { if (ddz.selected[i]) cards.push(c); });
+    if (!cards.length) return;
+    ddzSend("ddz_play", { cards: cards });
+    ddz.selected = {};
   }
 
   function addChat(n, t, ts) {
@@ -615,6 +696,11 @@ function renderPage() {
   function sendMessage() {
     var t = $("text").value.trim();
     if (!t || !ws || ws.readyState !== 1) return;
+    if (t === "/ddz") {
+      ws.send(JSON.stringify({ type: "ddz_start" }));
+      $("text").value = "";
+      return;
+    }
     ws.send(JSON.stringify({ type: "chat", text: t }));
     $("text").value = "";
   }
