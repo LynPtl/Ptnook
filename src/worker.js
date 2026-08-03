@@ -26,6 +26,15 @@ export class ChatRoom extends DurableObject {
     const history = (await this.ctx.storage.get("history")) || [];
     server.send(historyMsg(history));
 
+    // 若该昵称正处于进行中的牌局，补发牌局状态与手牌
+    const g = await this.getGame();
+    if (g && g.players.includes(nick)) {
+      try { server.send(JSON.stringify(this.publicState(g))); } catch {}
+      if (g.hands && g.hands[nick]) {
+        try { server.send(JSON.stringify({ type: "ddz_hand", cards: sortCards(g.hands[nick]) })); } catch {}
+      }
+    }
+
     const ts = Date.now();
     this.broadcast(systemMsg(`${nick} 加入了房间`, ts));
     this.broadcast(presenceMsg(this.ctx.getWebSockets().length));
@@ -72,6 +81,7 @@ export class ChatRoom extends DurableObject {
   async alarm() {
     if (this.ctx.getWebSockets().length === 0) {
       await this.ctx.storage.delete("history");
+      await this.ctx.storage.delete("ddz");
     }
   }
 
@@ -338,7 +348,33 @@ export class ChatRoom extends DurableObject {
     await this.sendDdzState(g);
   }
 
-  async handleDdzEnd(ws, msg, g, nick) { /* Task 7 实现 */ }
+  async handleDdzEnd(ws, msg, g, nick) {
+    if (msg.type === "ddz_disband") {
+      if (!g.players.includes(nick)) { this.ddzErr(ws, "你不在牌桌上"); return; }
+      await this.clearGame();
+      this.broadcast(systemMsg(`${nick} ${g.phase === "settled" ? "散桌" : "退出，本局作废并散桌"}，累计分已清零`, Date.now()));
+      // 通知三家回到无牌局
+      for (const p of (g.players || [])) {
+        const pw = this.wsByNick(p);
+        if (pw) { try { pw.send(JSON.stringify({ type: "ddz_state", phase: "none" })); } catch {} }
+      }
+      return;
+    }
+    if (msg.type === "ddz_again") {
+      if (g.phase !== "settled") { this.ddzErr(ws, "本局还没结束"); return; }
+      if (g.players.length !== 3) { this.ddzErr(ws, "有人离席，无法直接再来"); return; }
+      const scores = g.scores; // 保留累计
+      this.startBidding(g);
+      g.winner = null; g.lastPlay = null; g.current = null;
+      g.bombCount = 0; g.hasRocket = false; g.scores = scores;
+      await this.putGame(g);
+      this.broadcast(systemMsg(`再来一局，${g.bidTurn} 先叫`, Date.now()));
+      await this.sendDdzState(g);
+      for (const p of g.players) this.sendHand(g, p);
+      return;
+    }
+    this.ddzErr(ws, "未知操作");
+  }
 }
 
 export default {

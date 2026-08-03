@@ -210,3 +210,30 @@ describe("斗地主 出牌校验", () => {
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 });
+
+describe("斗地主 散桌与再来一局", () => {
+  async function toSettle(room) {
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 90));
+    return { a, b, c };
+  }
+  it("散桌后再发起是全新牌局", async () => {
+    const { a, b, c } = await toSettle("ddz3");
+    a.ws.send(JSON.stringify({ type: "ddz_disband" }));
+    await new Promise((r) => setTimeout(r, 80));
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const st = a.msgs.filter((m) => m.type === "ddz_state").pop();
+    expect(st.phase).toBe("waiting");
+    expect(st.seats.length).toBe(1);
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});
