@@ -143,9 +143,22 @@ export class ChatRoom extends DurableObject {
 
   async sendDdzState(g) {
     const payload = JSON.stringify(this.publicState(g));
-    for (const nick of g.players) {
-      const ws = this.wsByNick(nick);
-      if (ws) { try { ws.send(payload); } catch {} }
+    if (g.phase === "waiting") {
+      // 招募阶段：广播给房间所有人，未上桌的人才能看到并点【加入牌桌】
+      this.broadcast(payload);
+    } else {
+      for (const nick of g.players) {
+        const ws = this.wsByNick(nick);
+        if (ws) { try { ws.send(payload); } catch {} }
+      }
+    }
+  }
+  // 开局后清掉房间里非玩家残留的招募 bar
+  clearNonPlayers(g) {
+    const payload = JSON.stringify({ type: "ddz_state", phase: "none" });
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() || {};
+      if (!g.players.includes(att.nick)) { try { ws.send(payload); } catch {} }
     }
   }
   sendHand(g, nick) {
@@ -199,6 +212,7 @@ export class ChatRoom extends DurableObject {
         this.startBidding(g);
         await this.putGame(g);
         this.broadcast(systemMsg(`满 3 人，开始抢地主。${g.bidTurn} 先叫`, Date.now()));
+        this.clearNonPlayers(g);
         await this.sendDdzState(g);
         for (const p of g.players) this.sendHand(g, p);
       } else {
@@ -212,6 +226,8 @@ export class ChatRoom extends DurableObject {
       if (g.phase !== "waiting") { this.ddzErr(ws, "牌局已开始，不能取消"); return; }
       await this.clearGame();
       this.broadcast(systemMsg(`${nick} 取消了牌局`, Date.now()));
+      // 广播重置：房间所有人的招募 bar 收起
+      this.broadcast(JSON.stringify({ type: "ddz_state", phase: "none" }));
       return;
     }
 
