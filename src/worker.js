@@ -29,7 +29,7 @@ export class ChatRoom extends DurableObject {
     // 若该昵称正处于进行中的牌局，补发牌局状态与手牌
     const g = await this.getGame();
     if (g && g.players.includes(nick)) {
-      try { server.send(JSON.stringify(this.publicState(g))); } catch {}
+      try { server.send(JSON.stringify({ ...this.publicState(g), resumed: true })); } catch {}
       if (g.hands && g.hands[nick]) {
         try { server.send(JSON.stringify({ type: "ddz_hand", cards: sortCards(g.hands[nick]) })); } catch {}
       }
@@ -621,7 +621,7 @@ function renderPage() {
           scrollToBottom();
         }
       }
-      else if (m.type === "ddz_state") renderDdz(m);
+      else if (m.type === "ddz_state") { if (m.resumed) addSystem(ddzResumeSummary(m)); renderDdz(m); }
       else if (m.type === "ddz_hand") { ddz.hand = m.cards || []; ddz.selected = {}; renderHand(); }
       else if (m.type === "ddz_error") addSystem("⚠️ " + m.text);
     };
@@ -645,12 +645,40 @@ function renderPage() {
     ws.send(JSON.stringify(o));
   }
 
+  function ddzResumeSummary(state) {
+    var seats = state.seats || [];
+    var remain = seats.map(function (s) { return s.nick + "(" + s.cardCount + ")"; }).join(" ");
+    if (state.phase === "bidding") {
+      return "【牌局恢复】抢地主中，轮到 " + (state.current || "?") + " 叫分 ｜ 剩余 " + remain;
+    }
+    if (state.phase === "playing") {
+      var last = "";
+      if (state.lastPlay && state.lastPlay.cards && state.lastPlay.cards.length) {
+        last = "，上一手 " + state.lastPlay.nick + " 出 " + state.lastPlay.cards.map(cardLabel).join(" ");
+      } else {
+        last = "，当前自由出";
+      }
+      return "【牌局恢复】地主 " + (state.landlord || "?") + "，轮到 " + (state.current || "?") + " 出牌" + last + " ｜ 剩余 " + remain;
+    }
+    if (state.phase === "settled") {
+      return "【牌局恢复】本局已结束，可点【再来一局】或【散桌】";
+    }
+    if (state.phase === "waiting") {
+      return "【牌局恢复】等待玩家加入牌桌";
+    }
+    return "【牌局恢复】";
+  }
+
   function renderDdz(state) {
     ddz.phase = state.phase;
     var bar = $("ddzbar");
     var quit = $("ddzquit");
     if (state.phase === "none" || !state.phase) { bar.style.display = "none"; quit.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.hand = []; ddz.selected = {}; return; }
+    // 记录 ddzbar 显示前是否贴底：面板弹出会改变消息区可视高度，需据此保持贴底
+    var barWasHidden = bar.style.display !== "block";
+    var wasBottom = atBottom();
     bar.style.display = "block";
+    if (barWasHidden && wasBottom) scrollToBottom();
     // 招募阶段与结算阶段没有可出的手牌：清空手牌数据，避免残留旧牌
     if (state.phase === "waiting" || state.phase === "settled") { ddz.hand = []; ddz.selected = {}; }
     var me = nick;
