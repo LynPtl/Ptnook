@@ -484,6 +484,7 @@ function renderPage() {
     <header>
       <span class="room" id="roomLabel"></span>
       <span class="count" id="countLabel"></span>
+      <button id="ddzquit" style="display:none">退出牌局</button>
       <button id="leave">离开</button>
     </header>
     <div id="status"></div>
@@ -594,6 +595,8 @@ function renderPage() {
     $("messages").innerHTML = "";
   };
 
+  $("ddzquit").onclick = function () { ddzSend("ddz_disband"); };
+
   function connect() {
     // 建立新连接前，先清掉任何遗留的连接/重连定时器
     teardown();
@@ -645,12 +648,15 @@ function renderPage() {
   function renderDdz(state) {
     ddz.phase = state.phase;
     var bar = $("ddzbar");
-    if (state.phase === "none" || !state.phase) { bar.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.hand = []; ddz.selected = {}; return; }
+    var quit = $("ddzquit");
+    if (state.phase === "none" || !state.phase) { bar.style.display = "none"; quit.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.hand = []; ddz.selected = {}; return; }
     bar.style.display = "block";
     // 招募阶段与结算阶段没有可出的手牌：清空手牌数据，避免残留旧牌
     if (state.phase === "waiting" || state.phase === "settled") { ddz.hand = []; ddz.selected = {}; }
     var me = nick;
     var mySeat = (state.seats || []).some(function (s) { return s.nick === me; });
+    // 退出牌局按钮挪到右上角，仅牌局进行中（叫分/出牌）且自己在座时显示，避免与出牌按钮挤在一起误触
+    quit.style.display = (mySeat && (state.phase === "bidding" || state.phase === "playing")) ? "" : "none";
     var btns = $("ddzbtns");
     btns.innerHTML = "";
     function addBtn(label, fn) {
@@ -674,7 +680,6 @@ function renderPage() {
         addBtn("出牌", playSelected);
         addBtn("过", function () { ddzSend("ddz_pass"); });
       }
-      addBtn("退出牌局", function () { ddzSend("ddz_disband"); });
     } else if (state.phase === "settled") {
       addBtn("再来一局", function () { ddzSend("ddz_again"); });
       addBtn("散桌", function () { ddzSend("ddz_disband"); });
