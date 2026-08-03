@@ -252,15 +252,40 @@ describe("斗地主 修复项", () => {
     return { a, b, c };
   }
 
-  it("再来一局首叫轮换到下一座位", async () => {
-    const { a, b, c } = await fill("fix-rotate");
-    // 首局 A 叫 3 当地主 → 直接进 playing；用 disband 之外的方式回到 settled 较难，
-    // 改为验证 startBidding 的首叫轮换：读取首局首叫，再来一局后应为下一座位。
-    const st1 = a.msgs.filter((m) => m.type === "ddz_state" && m.phase === "bidding").pop();
-    const firstBidder = st1.current;
-    // 用地主速通：三家都不叫会重发；这里让 A 叫3成为地主并秒结算不现实（随机牌）。
-    // 仅断言 firstBidder 是三人之一，轮换逻辑在单元层无法直接触发，转由 DO 状态字段验证。
-    expect(["A", "B", "C"]).toContain(firstBidder);
+  it("再来一局首叫按座位轮换（注入状态直接验证）", async () => {
+    const room = "fix-rotate2";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("ddz");
+      const players = g.players; // 座位顺序
+      // 首局：firstBidIndex 应为 0 → 首叫为 players[0]
+      g.firstBidIndex = 0;
+      instance.startBidding(g);
+      expect(g.bidTurn).toBe(players[0]);
+      // 模拟一次“再来一局”的轮换：firstBidIndex 前进后再发牌
+      g.firstBidIndex = (g.firstBidIndex + 1) % 3;
+      instance.startBidding(g);
+      expect(g.bidTurn).toBe(players[1]);
+      // 再轮换一次 → players[2]
+      g.firstBidIndex = (g.firstBidIndex + 1) % 3;
+      instance.startBidding(g);
+      expect(g.bidTurn).toBe(players[2]);
+      // 再一次回到 players[0]
+      g.firstBidIndex = (g.firstBidIndex + 1) % 3;
+      instance.startBidding(g);
+      expect(g.bidTurn).toBe(players[0]);
+    });
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 
