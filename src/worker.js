@@ -642,8 +642,10 @@ function renderPage() {
   function renderDdz(state) {
     ddz.phase = state.phase;
     var bar = $("ddzbar");
-    if (state.phase === "none" || !state.phase) { bar.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.selected = {}; return; }
+    if (state.phase === "none" || !state.phase) { bar.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.hand = []; ddz.selected = {}; return; }
     bar.style.display = "block";
+    // 招募阶段与结算阶段没有可出的手牌：清空手牌数据，避免残留旧牌
+    if (state.phase === "waiting" || state.phase === "settled") { ddz.hand = []; ddz.selected = {}; }
     var me = nick;
     var mySeat = (state.seats || []).some(function (s) { return s.nick === me; });
     var btns = $("ddzbtns");
