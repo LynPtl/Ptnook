@@ -100,6 +100,17 @@ export class ChatRoom extends DurableObject {
     }
   }
 
+  cardText(c) { return c === "x" ? "小王" : c === "X" ? "大王" : c; }
+  remainStr(g) {
+    return "剩余 " + g.players.map((p) => `${p}${(g.hands[p] || []).length}`).join(" ");
+  }
+  rankBoard(g) {
+    const entries = g.players.map((p) => [p, g.scores[p] || 0]);
+    if (!entries.some(([, v]) => v !== 0)) return null;
+    entries.sort((x, y) => y[1] - x[1]);
+    return entries.map(([p, v]) => `${p} ${v >= 0 ? "+" : ""}${v}`).join("，");
+  }
+
   async getGame() { return (await this.ctx.storage.get("ddz")) || null; }
   async putGame(g) { await this.ctx.storage.put("ddz", g); }
   async clearGame() { await this.ctx.storage.delete("ddz"); }
@@ -176,7 +187,8 @@ export class ChatRoom extends DurableObject {
     g.players.forEach((nick, i) => { g.hands[nick] = hands[i]; });
     g.bottom = bottom;
     g.bids = {};
-    g.bidOrder = g.players.slice();
+    const start = Number.isInteger(g.firstBidIndex) ? g.firstBidIndex : 0;
+    g.bidOrder = g.players.slice(start).concat(g.players.slice(0, start));
     g.bidTurn = g.bidOrder[0];
     g.landlord = null;
     g.phase = "bidding";
@@ -193,7 +205,7 @@ export class ChatRoom extends DurableObject {
         phase: "waiting", players: [nick], starter: nick,
         hands: {}, bottom: [], bids: {}, bidOrder: [], bidTurn: null,
         landlord: null, current: null, lastPlay: null, passCount: 0,
-        bombCount: 0, hasRocket: false, scores: {}, winner: null,
+        bombCount: 0, hasRocket: false, scores: {}, winner: null, firstBidIndex: 0,
       };
       await this.putGame(g);
       this.broadcast(systemMsg(`${nick} 发起了斗地主，点【加入牌桌】上桌（还差 2 人）`, Date.now()));
@@ -282,9 +294,9 @@ export class ChatRoom extends DurableObject {
     if (msg.type === "ddz_pass") {
       if (g.phase !== "playing") { this.ddzErr(ws, "现在不能过"); return; }
       if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
-      if (!g.lastPlay) { this.ddzErr(ws, "首出不能过"); return; }
+      if (!g.lastPlay) { this.ddzErr(ws, "本轮到你先出，不能过"); return; }
       g.passCount += 1;
-      this.broadcast(systemMsg(`${nick} 过`, Date.now()));
+      this.broadcast(systemMsg(`${nick} 过 ｜ ${this.remainStr(g)}`, Date.now()));
       if (g.passCount >= 2) {
         // 回到最后出牌者，自由出
         g.current = g.lastPlay.nick;
@@ -313,7 +325,7 @@ export class ChatRoom extends DurableObject {
       if (info.type === "rocket") g.hasRocket = true;
       g.lastPlay = { nick, cards: sortCards(cards), type: info.type };
       g.passCount = 0;
-      this.broadcast(systemMsg(`${nick} 出 ${sortCards(cards).join(" ")}`, Date.now()));
+      this.broadcast(systemMsg(`${nick} 出 ${sortCards(cards).map((c) => this.cardText(c)).join(" ")} ｜ ${this.remainStr(g)}`, Date.now()));
       if (g.hands[nick].length === 0) {
         await this.settle(g, nick);
         return;
@@ -359,16 +371,22 @@ export class ChatRoom extends DurableObject {
       g.scores[p] = (g.scores[p] || 0) + delta[i];
     }
     await this.putGame(g);
+    const hands = g.players.map((p) => {
+      const h = sortCards(g.hands[p] || []).map((c) => this.cardText(c)).join(" ");
+      return `${p}：${h || "无"}`;
+    }).join("；");
     const summary = g.players.map((p, i) => `${p} ${delta[i] >= 0 ? "+" : ""}${delta[i]}（累计 ${g.scores[p]}）`).join("，");
-    this.broadcast(systemMsg(`本局结束，${landlordWon ? "地主" : "农民"}胜。${summary}`, Date.now()));
+    this.broadcast(systemMsg(`本局结束，${landlordWon ? "地主" : "农民"}胜。剩余手牌 — ${hands}。${summary}`, Date.now()));
     await this.sendDdzState(g);
   }
 
   async handleDdzEnd(ws, msg, g, nick) {
     if (msg.type === "ddz_disband") {
       if (!g.players.includes(nick)) { this.ddzErr(ws, "你不在牌桌上"); return; }
+      const board = this.rankBoard(g);
       await this.clearGame();
       this.broadcast(systemMsg(`${nick} ${g.phase === "settled" ? "散桌" : "退出，本局作废并散桌"}，累计分已清零`, Date.now()));
+      if (board) this.broadcast(systemMsg(`本桌战绩 — ${board}。牌桌已解散。`, Date.now()));
       // 通知三家回到无牌局
       for (const p of (g.players || [])) {
         const pw = this.wsByNick(p);
@@ -380,6 +398,7 @@ export class ChatRoom extends DurableObject {
       if (g.phase !== "settled") { this.ddzErr(ws, "本局还没结束"); return; }
       if (g.players.length !== 3) { this.ddzErr(ws, "有人离席，无法直接再来"); return; }
       const scores = g.scores; // 保留累计
+      g.firstBidIndex = ((Number.isInteger(g.firstBidIndex) ? g.firstBidIndex : 0) + 1) % 3;
       this.startBidding(g);
       g.winner = null; g.lastPlay = null; g.current = null;
       g.bombCount = 0; g.hasRocket = false; g.scores = scores;
