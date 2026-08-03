@@ -187,3 +187,26 @@ describe("斗地主 发起与加入", () => {
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 });
+
+describe("斗地主 出牌校验", () => {
+  it("未轮到你出牌被拒", async () => {
+    const a = await openWSCollect("ddz2", "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const b = await openWSCollect("ddz2", "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const c = await openWSCollect("ddz2", "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 100));
+    // 叫分：A 叫 3 直接当地主
+    a.ws.send(JSON.stringify({ type: "ddz_bid", value: 3 }));
+    await new Promise((r) => setTimeout(r, 100));
+    // 现在地主是 A，轮到 A 出牌；B 试图出牌应被拒
+    b.msgs.length = 0;
+    b.ws.send(JSON.stringify({ type: "ddz_play", cards: ["3"] }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(b.msgs.some((m) => m.type === "ddz_error")).toBe(true);
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});
