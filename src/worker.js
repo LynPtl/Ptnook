@@ -102,7 +102,7 @@ export class ChatRoom extends DurableObject {
 
   cardText(c) { return c === "x" ? "小王" : c === "X" ? "大王" : c; }
   remainStr(g) {
-    return "剩余 " + g.players.map((p) => `${p}${(g.hands[p] || []).length}`).join(" ");
+    return "剩余 " + g.players.map((p) => `${p}(${(g.hands[p] || []).length})`).join(" ");
   }
   rankBoard(g) {
     const entries = g.players.map((p) => [p, g.scores[p] || 0]);
@@ -273,7 +273,7 @@ export class ChatRoom extends DurableObject {
         g.lastPlay = null;
         g.passCount = 0;
         await this.putGame(g);
-        this.broadcast(systemMsg(`${landlord} 当地主（底分 ${resolved.base}），底牌 ${g.bottom.join(" ")}`, Date.now()));
+        this.broadcast(systemMsg(`${landlord} 当地主（底分 ${resolved.base}），底牌 ${g.bottom.map((c) => this.cardText(c)).join(" ")} ｜ 轮到 ${landlord} 出牌`, Date.now()));
         await this.sendDdzState(g);
         this.sendHand(g, landlord);
         return;
@@ -281,6 +281,7 @@ export class ChatRoom extends DurableObject {
       // 轮到下一个还没叫的人
       const i = g.bidOrder.indexOf(nick);
       g.bidTurn = g.bidOrder[(i + 1) % 3];
+      this.broadcast(systemMsg(`轮到 ${g.bidTurn} 叫分`, Date.now()));
       await this.putGame(g);
       await this.sendDdzState(g);
       return;
@@ -296,7 +297,6 @@ export class ChatRoom extends DurableObject {
       if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
       if (!g.lastPlay) { this.ddzErr(ws, "本轮到你先出，不能过"); return; }
       g.passCount += 1;
-      this.broadcast(systemMsg(`${nick} 过 ｜ ${this.remainStr(g)}`, Date.now()));
       if (g.passCount >= 2) {
         // 回到最后出牌者，自由出
         g.current = g.lastPlay.nick;
@@ -305,6 +305,7 @@ export class ChatRoom extends DurableObject {
       } else {
         g.current = this.nextSeat(g, nick);
       }
+      this.broadcast(systemMsg(`${nick} 过 ｜ ${this.remainStr(g)} ｜ 轮到 ${g.current} 出牌`, Date.now()));
       await this.putGame(g);
       await this.sendDdzState(g);
       return;
@@ -325,12 +326,14 @@ export class ChatRoom extends DurableObject {
       if (info.type === "rocket") g.hasRocket = true;
       g.lastPlay = { nick, cards: sortCards(cards), type: info.type };
       g.passCount = 0;
-      this.broadcast(systemMsg(`${nick} 出 ${sortCards(cards).map((c) => this.cardText(c)).join(" ")} ｜ ${this.remainStr(g)}`, Date.now()));
+      const played = `${nick} 出 ${sortCards(cards).map((c) => this.cardText(c)).join(" ")} ｜ ${this.remainStr(g)}`;
       if (g.hands[nick].length === 0) {
+        this.broadcast(systemMsg(played, Date.now()));
         await this.settle(g, nick);
         return;
       }
       g.current = this.nextSeat(g, nick);
+      this.broadcast(systemMsg(`${played} ｜ 轮到 ${g.current} 出牌`, Date.now()));
       await this.putGame(g);
       await this.sendDdzState(g);
       this.sendHand(g, nick);
