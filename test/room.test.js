@@ -166,3 +166,24 @@ describe("ChatRoom 空房清除", () => {
     ws2.close();
   });
 });
+
+describe("斗地主 发起与加入", () => {
+  it("三人加入后进入叫分并各收到手牌", async () => {
+    const a = await openWSCollect("ddz1", "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const b = await openWSCollect("ddz1", "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const c = await openWSCollect("ddz1", "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 120));
+
+    const stateA = a.msgs.filter((m) => m.type === "ddz_state").pop();
+    const handA = a.msgs.filter((m) => m.type === "ddz_hand").pop();
+    expect(stateA.phase).toBe("bidding");
+    expect(stateA.seats.length).toBe(3);
+    expect(handA.cards.length).toBe(17);
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});

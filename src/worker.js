@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
+import { makeDeck, deal, sortCards, resolveBids } from "./ddz.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -34,6 +35,12 @@ export class ChatRoom extends DurableObject {
 
   async webSocketMessage(ws, message) {
     if (typeof message !== "string") return;
+    let obj = null;
+    try { obj = JSON.parse(message); } catch {}
+    if (obj && typeof obj.type === "string" && obj.type.startsWith("ddz_")) {
+      await this.handleDdz(ws, obj);
+      return;
+    }
     const parsed = parseInbound(message);
     if (!parsed) return;
     const att = ws.deserializeAttachment() || {};
@@ -82,6 +89,170 @@ export class ChatRoom extends DurableObject {
       } catch {}
     }
   }
+
+  async getGame() { return (await this.ctx.storage.get("ddz")) || null; }
+  async putGame(g) { await this.ctx.storage.put("ddz", g); }
+  async clearGame() { await this.ctx.storage.delete("ddz"); }
+
+  wsByNick(nick) {
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() || {};
+      if (att.nick === nick) return ws;
+    }
+    return null;
+  }
+
+  shuffledDeck() {
+    const deck = makeDeck();
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32 * (i + 1));
+      [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    return deck;
+  }
+
+  publicState(g) {
+    const seats = g.players.map((nick) => ({
+      nick,
+      cardCount: g.hands[nick] ? g.hands[nick].length : 0,
+      role: g.landlord ? (nick === g.landlord ? "landlord" : "farmer") : null,
+      bid: g.bids[nick] == null ? null : g.bids[nick],
+    }));
+    return {
+      type: "ddz_state",
+      phase: g.phase,
+      seats,
+      landlord: g.landlord,
+      bottom: g.phase === "playing" || g.phase === "settled" ? g.bottom : null,
+      current: g.phase === "bidding" ? g.bidTurn : g.current,
+      lastPlay: g.lastPlay,
+      scores: g.scores,
+      winnerSeat: g.winner,
+    };
+  }
+
+  async sendDdzState(g) {
+    const payload = JSON.stringify(this.publicState(g));
+    for (const nick of g.players) {
+      const ws = this.wsByNick(nick);
+      if (ws) { try { ws.send(payload); } catch {} }
+    }
+  }
+  sendHand(g, nick) {
+    const ws = this.wsByNick(nick);
+    if (ws) {
+      try { ws.send(JSON.stringify({ type: "ddz_hand", cards: sortCards(g.hands[nick] || []) })); } catch {}
+    }
+  }
+  ddzErr(ws, text) { try { ws.send(JSON.stringify({ type: "ddz_error", text })); } catch {} }
+
+  startBidding(g) {
+    const deck = this.shuffledDeck();
+    const { hands, bottom } = deal(deck);
+    g.hands = {};
+    g.players.forEach((nick, i) => { g.hands[nick] = hands[i]; });
+    g.bottom = bottom;
+    g.bids = {};
+    g.bidOrder = g.players.slice();
+    g.bidTurn = g.bidOrder[0];
+    g.landlord = null;
+    g.phase = "bidding";
+  }
+
+  async handleDdz(ws, msg) {
+    const att = ws.deserializeAttachment() || {};
+    const nick = att.nick || "访客";
+    let g = await this.getGame();
+
+    if (msg.type === "ddz_start") {
+      if (g) { this.ddzErr(ws, "已有牌局进行中"); return; }
+      g = {
+        phase: "waiting", players: [nick], starter: nick,
+        hands: {}, bottom: [], bids: {}, bidOrder: [], bidTurn: null,
+        landlord: null, current: null, lastPlay: null, passCount: 0,
+        bombCount: 0, hasRocket: false, scores: {}, winner: null,
+      };
+      await this.putGame(g);
+      this.broadcast(systemMsg(`${nick} 发起了斗地主，点【加入牌桌】上桌（还差 2 人）`, Date.now()));
+      await this.sendDdzState(g);
+      return;
+    }
+    if (!g) { this.ddzErr(ws, "当前没有牌局，输入 /ddz 发起"); return; }
+
+    if (msg.type === "ddz_join") {
+      if (g.phase !== "waiting") { this.ddzErr(ws, "牌局已开始"); return; }
+      if (g.players.includes(nick)) { this.ddzErr(ws, "你已在牌桌上"); return; }
+      if (g.players.length >= 3) { this.ddzErr(ws, "牌桌已满"); return; }
+      g.players.push(nick);
+      this.broadcast(systemMsg(`${nick} 加入了牌桌（${g.players.length}/3）`, Date.now()));
+      if (g.players.length === 3) {
+        this.startBidding(g);
+        await this.putGame(g);
+        this.broadcast(systemMsg(`满 3 人，开始抢地主。${g.bidTurn} 先叫`, Date.now()));
+        await this.sendDdzState(g);
+        for (const p of g.players) this.sendHand(g, p);
+      } else {
+        await this.putGame(g);
+        await this.sendDdzState(g);
+      }
+      return;
+    }
+
+    if (msg.type === "ddz_cancel") {
+      if (g.phase !== "waiting") { this.ddzErr(ws, "牌局已开始，不能取消"); return; }
+      await this.clearGame();
+      this.broadcast(systemMsg(`${nick} 取消了牌局`, Date.now()));
+      return;
+    }
+
+    if (msg.type === "ddz_bid") {
+      if (g.phase !== "bidding") { this.ddzErr(ws, "现在不是叫分阶段"); return; }
+      if (nick !== g.bidTurn) { this.ddzErr(ws, "还没轮到你叫分"); return; }
+      const v = [0, 1, 2, 3].includes(msg.value) ? msg.value : 0;
+      const prevMax = Math.max(0, ...Object.values(g.bids));
+      if (v !== 0 && v <= prevMax) { this.ddzErr(ws, "只能叫更高的分或不叫"); return; }
+      g.bids[nick] = v;
+      this.broadcast(systemMsg(`${nick} ${v === 0 ? "不叫" : "叫了 " + v + " 分"}`, Date.now()));
+      // 叫 3 立即结束，或所有人叫过一轮
+      const bidValues = g.bidOrder.map((p) => g.bids[p]);
+      const allBid = g.bidOrder.every((p) => g.bids[p] != null);
+      if (v === 3 || allBid) {
+        const resolved = resolveBids(g.bidOrder.map((p) => (g.bids[p] == null ? 0 : g.bids[p])));
+        if (!resolved) {
+          this.broadcast(systemMsg("无人叫地主，重新发牌", Date.now()));
+          this.startBidding(g);
+          await this.putGame(g);
+          await this.sendDdzState(g);
+          for (const p of g.players) this.sendHand(g, p);
+          return;
+        }
+        const landlord = g.bidOrder[resolved.landlordIndex];
+        g.landlord = landlord;
+        g.base = resolved.base;
+        g.hands[landlord] = g.hands[landlord].concat(g.bottom);
+        g.phase = "playing";
+        g.current = landlord;
+        g.lastPlay = null;
+        g.passCount = 0;
+        await this.putGame(g);
+        this.broadcast(systemMsg(`${landlord} 当地主（底分 ${resolved.base}），底牌 ${g.bottom.join(" ")}`, Date.now()));
+        await this.sendDdzState(g);
+        this.sendHand(g, landlord);
+        return;
+      }
+      // 轮到下一个还没叫的人
+      const i = g.bidOrder.indexOf(nick);
+      g.bidTurn = g.bidOrder[(i + 1) % 3];
+      await this.putGame(g);
+      await this.sendDdzState(g);
+      return;
+    }
+
+    // playing / settled 相关消息在 Task 6 处理
+    await this.handleDdzPlay(ws, msg, g, nick);
+  }
+
+  async handleDdzPlay(ws, msg, g, nick) { /* Task 6 实现 */ }
 }
 
 export default {
