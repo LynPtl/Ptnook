@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays } from "../src/ddz.js";
+import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores } from "../src/ddz.js";
 
 describe("makeDeck", () => {
   it("54 张，含双王，每普通点数 4 张", () => {
@@ -111,5 +111,30 @@ describe("enumerateLegalPlays", () => {
   });
   it("要不起返回空", () => {
     expect(enumerateLegalPlays(["3", "4"], ["A", "A"])).toEqual([]);
+  });
+});
+
+describe("resolveBids", () => {
+  it("最高分当地主", () => {
+    expect(resolveBids([1, 3, 2])).toEqual({ landlordIndex: 1, base: 3 });
+    expect(resolveBids([2, 0, 2])).toEqual({ landlordIndex: 0, base: 2 });
+  });
+  it("全不叫返回 null", () => {
+    expect(resolveBids([0, 0, 0])).toBeNull();
+  });
+});
+
+describe("computeScores", () => {
+  it("地主赢，无炸，底分2", () => {
+    // mult = 2；地主 +4，农民各 -2
+    expect(computeScores(0, true, 2, 0, false)).toEqual([4, -2, -2]);
+  });
+  it("地主输，1炸，底分1", () => {
+    // mult = 1*2 = 2；地主 -4，农民 +2
+    expect(computeScores(2, false, 1, 1, false)).toEqual([2, 2, -4]);
+  });
+  it("火箭翻倍", () => {
+    // base1, 0炸, 火箭 → mult = 1*2 = 2；地主赢 +4，农民 -2
+    expect(computeScores(1, true, 1, 0, true)).toEqual([-2, 4, -2]);
   });
 });

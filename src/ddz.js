@@ -178,3 +178,22 @@ export function enumerateLegalPlays(hand, last) {
   }
   return out;
 }
+
+export function resolveBids(bids) {
+  let best = -1, idx = -1;
+  for (let i = 0; i < bids.length; i++) {
+    if (bids[i] > best) { best = bids[i]; idx = i; }
+  }
+  if (best <= 0) return null;
+  return { landlordIndex: idx, base: best };
+}
+
+export function computeScores(landlordIndex, landlordWon, base, bombCount, hasRocket) {
+  let mult = base * Math.pow(2, bombCount) * (hasRocket ? 2 : 1);
+  const res = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    if (i === landlordIndex) res[i] = landlordWon ? mult * 2 : -mult * 2;
+    else res[i] = landlordWon ? -mult : mult;
+  }
+  return res;
+}
