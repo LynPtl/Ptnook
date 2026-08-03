@@ -44,7 +44,7 @@
 - 服务端 src/worker.js:出牌校验文案(1)、settle 广播加剩余手牌(3)、出牌/过牌广播加三家剩余张数(4)、startBidding/游戏状态加 firstBidIndex 轮换(5)。
 - 前端 renderPage:settled 清手牌条(2)、waiting/none 清 hand(6)。
 - 引擎 src/ddz.js:无需改动(纯规则不变)。
-- 现有 51 测试需保持通过;新增针对手数递增、再来一局轮换首叫的集成/单元断言。
+- 现有 51 测试需保持通过;新增针对再来一局轮换首叫的集成/单元断言。
 
 ## 非目标
 
