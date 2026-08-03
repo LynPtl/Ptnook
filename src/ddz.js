@@ -126,3 +126,55 @@ export function identifyPlay(cards) {
   }
   return null;
 }
+
+export function beats(play, last) {
+  const a = identifyPlay(play);
+  if (!a) return false;
+  if (!last || last.length === 0) return true;
+  const b = identifyPlay(last);
+  if (!b) return true; // 上家非法，视作自由出
+  if (a.type === "rocket") return true;
+  if (b.type === "rocket") return false;
+  if (a.type === "bomb" && b.type !== "bomb") return true;
+  if (b.type === "bomb" && a.type !== "bomb") return false;
+  if (a.type !== b.type) return false;
+  if (a.len !== b.len) return false;
+  return a.rank > b.rank;
+}
+
+// 生成 hand 中所有大小为 k 的组合（去重，基于排序后的索引）
+function combinations(arr, k) {
+  const res = [];
+  const n = arr.length;
+  const idx = [];
+  (function rec(start, depth) {
+    if (depth === k) { res.push(idx.map((i) => arr[i])); return; }
+    for (let i = start; i < n; i++) {
+      idx.push(i);
+      rec(i + 1, depth + 1);
+      idx.pop();
+    }
+  })(0, 0);
+  return res;
+}
+
+export function enumerateLegalPlays(hand, last) {
+  const sorted = sortCards(hand);
+  const seen = new Set();
+  const out = [];
+  const maxLen = last && last.length ? Math.max(sorted.length, 0) : sorted.length;
+  // 组合规模：为控制枚举量，最长枚举到手牌长度；斗地主单手 ≤20，可接受
+  for (let k = 1; k <= sorted.length; k++) {
+    for (const combo of combinations(sorted, k)) {
+      const key = combo.slice().sort((a, b) => RANK_VALUE[a] - RANK_VALUE[b]).join(",");
+      if (seen.has(key)) continue;
+      if (identifyPlay(combo) && beats(combo, last)) {
+        seen.add(key);
+        out.push(combo);
+      } else {
+        seen.add(key);
+      }
+    }
+  }
+  return out;
+}

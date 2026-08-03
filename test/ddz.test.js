@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay } from "../src/ddz.js";
+import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays } from "../src/ddz.js";
 
 describe("makeDeck", () => {
   it("54 张，含双王，每普通点数 4 张", () => {
@@ -67,5 +67,49 @@ describe("identifyPlay", () => {
     expect(t([])).toBeNull();
     expect(t(["3", "4"])).toBeNull();
     expect(t(["3", "3", "3", "3", "4", "4"])).toBeNull(); // 四带二只允许两单
+  });
+});
+
+describe("beats", () => {
+  it("空上家：合法即可出", () => {
+    expect(beats(["5"], null)).toBe(true);
+    expect(beats(["3", "4"], null)).toBe(false); // 非法
+  });
+  it("同类型比大小", () => {
+    expect(beats(["6"], ["5"])).toBe(true);
+    expect(beats(["5"], ["6"])).toBe(false);
+    expect(beats(["5", "5"], ["4", "4"])).toBe(true);
+  });
+  it("炸弹与火箭", () => {
+    expect(beats(["5", "5", "5", "5"], ["A"])).toBe(true); // 炸压单
+    expect(beats(["6", "6", "6", "6"], ["5", "5", "5", "5"])).toBe(true);
+    expect(beats(["x", "X"], ["6", "6", "6", "6"])).toBe(true); // 火压炸
+    expect(beats(["5"], ["6", "6", "6", "6"])).toBe(false);
+  });
+  it("类型不同不能压", () => {
+    expect(beats(["5", "5"], ["6"])).toBe(false);
+  });
+  it("顺子需同长度", () => {
+    expect(beats(["4","5","6","7","8"], ["3","4","5","6","7"])).toBe(true);
+    expect(beats(["4","5","6","7","8","9"], ["3","4","5","6","7"])).toBe(false);
+  });
+});
+
+describe("enumerateLegalPlays", () => {
+  it("自由出：至少含单张与对子", () => {
+    const plays = enumerateLegalPlays(["5", "5", "6"], null);
+    const has = (arr) => plays.some((p) => p.slice().sort().join() === arr.slice().sort().join());
+    expect(has(["5"])).toBe(true);
+    expect(has(["6"])).toBe(true);
+    expect(has(["5", "5"])).toBe(true);
+  });
+  it("应对单张：只出得起更大的单或炸/火", () => {
+    const plays = enumerateLegalPlays(["6", "7", "7", "7", "7"], ["5"]);
+    // 6 可压 5；7 可压 5；四个 7 是炸弹
+    expect(plays.some((p) => p.length === 1 && p[0] === "6")).toBe(true);
+    expect(plays.some((p) => p.length === 4)).toBe(true);
+  });
+  it("要不起返回空", () => {
+    expect(enumerateLegalPlays(["3", "4"], ["A", "A"])).toEqual([]);
   });
 });
