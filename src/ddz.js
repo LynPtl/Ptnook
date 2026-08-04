@@ -331,11 +331,11 @@ export function decompose(hand) {
   return { groups, pairs, singles };
 }
 
-// 破坏度：出 play 后，剩余手牌的“成型牌组数”减少越多越差；散张增多也算破坏
+// 破坏度：出 play 后，剩余手牌的“成型牌组数”减少越多越差
 function structureScore(cards) {
   const d = decompose(cards);
-  // 成型牌组数（顺子/连对/飞机/三条/炸弹/火箭），越多越好；散张越少越好
-  return { groups: d.groups.length, loose: d.pairs.length + d.singles.length };
+  // 成型牌组数（顺子/连对/飞机/三条/炸弹/火箭），越多越好
+  return { groups: d.groups.length };
 }
 function removeCardsArr(hand, cards) {
   const p = hand.slice();
