@@ -634,6 +634,7 @@ function renderPage() {
       }
       else if (m.type === "ddz_state") { if (m.resumed) addSystem(ddzResumeSummary(m)); renderDdz(m); }
       else if (m.type === "ddz_hand") { ddz.hand = m.cards || []; ddz.selected = {}; renderHand(); }
+      else if (m.type === "ddz_hint") applyHint(m.cards || []);
       else if (m.type === "ddz_error") addSystem("⚠️ " + m.text);
     };
     ws.onclose = function () {
@@ -716,6 +717,7 @@ function renderPage() {
     } else if (state.phase === "playing") {
       if (state.current === me) {
         addBtn("出牌", playSelected);
+        addBtn("提示", function () { ddzSend("ddz_hint"); });
         addBtn("过", function () { ddzSend("ddz_pass"); });
       }
     } else if (state.phase === "settled") {
@@ -749,6 +751,17 @@ function renderPage() {
     if (!cards.length) return;
     ddzSend("ddz_play", { cards: cards });
     ddz.selected = {};
+  }
+
+  function applyHint(cards) {
+    ddz.selected = {};
+    // 按令牌逐张匹配 ddz.hand 中尚未选中的同点数位置（处理重复点数）
+    cards.forEach(function (c) {
+      for (var i = 0; i < ddz.hand.length; i++) {
+        if (ddz.hand[i] === c && !ddz.selected[i]) { ddz.selected[i] = true; break; }
+      }
+    });
+    renderHand();
   }
 
   function addChat(n, t, ts) {
