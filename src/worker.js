@@ -726,6 +726,7 @@ function renderPage() {
           lastHintAt = now;
           ddzSend("ddz_hint");
         });
+        addBtn("取消选中", function () { ddz.selected = {}; renderHand(); });
         addBtn("过", function () { ddzSend("ddz_pass"); });
       }
     } else if (state.phase === "settled") {
