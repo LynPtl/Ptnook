@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores, pickHint, decompose } from "../src/ddz.js";
+import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores, pickHint, decompose, chooseHint } from "../src/ddz.js";
 
 describe("makeDeck", () => {
   it("54 张，含双王，每普通点数 4 张", () => {
@@ -188,5 +188,35 @@ describe("decompose", () => {
     expect(d.groups.some((g) => g.type === "pair_straight")).toBe(true);
     expect(d.pairs.length).toBe(0);
     expect(d.singles.length).toBe(0);
+  });
+});
+
+describe("chooseHint", () => {
+  it("规则0：能一手走完就全出（自由出，整手是顺子）", () => {
+    const hand = ["3", "4", "5", "6", "7"];
+    expect(chooseHint(hand, null)).toEqual(["3", "4", "5", "6", "7"]);
+  });
+  it("规则0：跟牌能一手压过就全出", () => {
+    // 手里就一对 KK，上家出一对 5 → 全出 KK
+    expect(chooseHint(["K", "K"], ["5", "5"])).toEqual(["K", "K"]);
+  });
+  it("规则1：跟单张时用孤张而非拆顺子", () => {
+    // 手: 6(孤张) + 8 9 10 J Q(顺子)；上家出 5 → 应出 6，不拆顺子
+    const hand = ["6", "8", "9", "10", "J", "Q"];
+    expect(chooseHint(hand, ["5"])).toEqual(["6"]);
+  });
+  it("规则2：只有炸弹能压才出炸", () => {
+    // 手: 三个... 用四张 7 作炸；上家出对 A，手里没有更大的对 → 出炸弹 7777
+    const hand = ["7", "7", "7", "7", "3"];
+    expect(chooseHint(hand, ["A", "A"])).toEqual(["7", "7", "7", "7"]);
+  });
+  it("要不起返回 null", () => {
+    // 手: 3 4，上家出 2 → 压不过，且非整手可压 → null
+    expect(chooseHint(["3", "4"], ["2"])).toBeNull();
+  });
+  it("规则3：自由出先出最小孤张", () => {
+    // 手: 3(孤张) + 8 8(对) + 9 9 9(三条)；自由出 → 出 3
+    const hand = ["3", "8", "8", "9", "9", "9"];
+    expect(chooseHint(hand, null)).toEqual(["3"]);
   });
 });

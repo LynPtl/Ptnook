@@ -330,3 +330,75 @@ export function decompose(hand) {
   const singles = sortCards(pool);
   return { groups, pairs, singles };
 }
+
+// 破坏度：出 play 后，剩余手牌的“成型牌组数”减少越多越差；散张增多也算破坏
+function structureScore(cards) {
+  const d = decompose(cards);
+  // 成型牌组数（顺子/连对/飞机/三条/炸弹/火箭），越多越好；散张越少越好
+  return { groups: d.groups.length, loose: d.pairs.length + d.singles.length };
+}
+function removeCardsArr(hand, cards) {
+  const p = hand.slice();
+  for (const c of cards) { const i = p.indexOf(c); if (i >= 0) p.splice(i, 1); }
+  return p;
+}
+
+export function chooseHint(hand, last) {
+  if (!hand || hand.length === 0) return null;
+
+  // 规则 0：能一手走完
+  const whole = identifyPlay(hand);
+  if (whole && (!last || last.length === 0 || beats(hand, last))) {
+    return sortCards(hand);
+  }
+
+  if (last && last.length > 0) {
+    // 跟牌
+    const candidates = enumerateLegalPlays(hand, last);
+    if (candidates.length === 0) return null;
+    const nonBomb = candidates.filter((c) => {
+      const t = identifyPlay(c).type;
+      return t !== "bomb" && t !== "rocket";
+    });
+    if (nonBomb.length > 0) {
+      // 规则 1：破坏度最低、并列 rank 最小
+      const base = structureScore(hand).groups;
+      let best = null, bestLoss = Infinity, bestRank = Infinity;
+      for (const play of nonBomb) {
+        const after = structureScore(removeCardsArr(hand, play));
+        const loss = base - after.groups; // 拆掉成型组数（越小越好）
+        const rank = identifyPlay(play).rank;
+        if (loss < bestLoss || (loss === bestLoss && rank < bestRank)) {
+          best = play; bestLoss = loss; bestRank = rank;
+        }
+      }
+      return sortCards(best);
+    }
+    // 规则 2：只有炸弹/火箭能压
+    const bombs = candidates.filter((c) => identifyPlay(c).type === "bomb");
+    if (bombs.length > 0) {
+      bombs.sort((a, b) => identifyPlay(a).rank - identifyPlay(b).rank);
+      return sortCards(bombs[0]);
+    }
+    const rocket = candidates.find((c) => identifyPlay(c).type === "rocket");
+    return rocket ? sortCards(rocket) : null;
+  }
+
+  // 自由出 规则 3：先清散牌
+  const d = decompose(hand);
+  if (d.singles.length > 0) {
+    // 最小孤张（singles 已升序）
+    return [d.singles[0]];
+  }
+  if (d.pairs.length > 0) {
+    // 最小孤对
+    let best = d.pairs[0];
+    for (const p of d.pairs) if (RANK_VALUE[p[0]] < RANK_VALUE[best[0]]) best = p;
+    return best.slice();
+  }
+  // 只剩成型组：取点数最小的一组
+  let best = d.groups[0];
+  const minRankOf = (g) => Math.min(...g.cards.map((c) => RANK_VALUE[c]));
+  for (const g of d.groups) if (minRankOf(g) < minRankOf(best)) best = g;
+  return sortCards(best.cards);
+}
