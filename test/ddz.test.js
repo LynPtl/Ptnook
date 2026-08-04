@@ -191,6 +191,39 @@ describe("decompose", () => {
   });
 });
 
+describe("decompose 纯料约束（不拆对/三条凑顺子）", () => {
+  it("三条不被顺子借走：QQQ 保留为三条", () => {
+    // 8 9 10 J Q Q Q K A：Q 有三张，不应被顺子借走一张
+    const d = decompose(["8", "9", "10", "J", "Q", "Q", "Q", "K", "A"]);
+    expect(d.groups.some((g) => g.type === "triple" && g.cards.join() === "Q,Q,Q")).toBe(true);
+    // Q 不应作为孤张出现在 singles
+    expect(d.singles).not.toContain("Q");
+  });
+
+  it("bug 手牌：不产生假孤张 Q，QQQ 成三条", () => {
+    const hand = ["6", "6", "6", "8", "9", "9", "10", "10", "J", "J", "Q", "Q", "Q", "K", "K", "A", "A", "2", "2", "x"];
+    const d = decompose(hand);
+    expect(d.singles).not.toContain("Q");
+    expect(d.groups.some((g) => g.type === "triple" && g.cards.join() === "Q,Q,Q")).toBe(true);
+    expect(d.groups.some((g) => g.type === "triple" && g.cards.join() === "6,6,6")).toBe(true);
+  });
+
+  it("对子不被顺子借走：只用单张料成顺", () => {
+    // 3 4 5 6 7 7：7 有两张（对料），顺子只能用单张 3 4 5 6 + 一个7？
+    // 纯料规则：7 出现2次 → 不进顺子 → 3-6 仅4连 <5 → 不成顺子 → 3 4 5 6 皆孤张，77 为孤对
+    const d = decompose(["3", "4", "5", "6", "7", "7"]);
+    expect(d.groups.some((g) => g.type === "straight")).toBe(false);
+    expect(d.pairs.some((p) => p.join() === "7,7")).toBe(true);
+    expect(d.singles).toEqual(["3", "4", "5", "6"]);
+  });
+
+  it("纯单张料仍能成顺子", () => {
+    // 3 4 5 6 7 全单张 → 顺子
+    const d = decompose(["3", "4", "5", "6", "7"]);
+    expect(d.groups.some((g) => g.type === "straight" && g.cards.length === 5)).toBe(true);
+  });
+});
+
 describe("chooseHint", () => {
   it("规则0：能一手走完就全出（自由出，整手是顺子）", () => {
     const hand = ["3", "4", "5", "6", "7"];

@@ -267,10 +267,10 @@ export function decompose(hand) {
     groups.push({ type: "plane", cards });
     pool = removeCards(pool, cards);
   }
-  // 4) 顺子（≥5 连续单张，不含 2/王），最长优先
+  // 4) 顺子（≥5 连续单张，不含 2/王），只用剩余恰好1张的点数（不拆对/三条/炸）
   for (;;) {
     const m = cnt();
-    const avail = [...m.keys()].map((c) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
+    const avail = [...m.entries()].filter(([, k]) => k === 1).map(([c]) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
     let best = [];
     for (let i = 0; i < avail.length; i++) {
       let run = [avail[i]];
@@ -285,10 +285,10 @@ export function decompose(hand) {
     groups.push({ type: "straight", cards });
     pool = removeCards(pool, cards);
   }
-  // 5) 连对（≥3 连续对子，不含 2/王），最长优先
+  // 5) 连对（≥3 连续对子，不含 2/王），只用剩余恰好2张的点数（不借三条/炸）
   for (;;) {
     const m = cnt();
-    const pairRanks = [...m.entries()].filter(([, k]) => k >= 2).map(([c]) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
+    const pairRanks = [...m.entries()].filter(([, k]) => k === 2).map(([c]) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
     let best = [];
     for (let i = 0; i < pairRanks.length; i++) {
       let run = [pairRanks[i]];
