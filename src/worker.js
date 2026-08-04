@@ -295,9 +295,16 @@ export class ChatRoom extends DurableObject {
     if (msg.type === "ddz_hint") {
       if (g.phase !== "playing") { this.ddzErr(ws, "现在不能提示"); return; }
       if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
+      const hand = g.hands[nick] || [];
       const last = g.lastPlay ? g.lastPlay.cards : null;
-      const plays = enumerateLegalPlays(g.hands[nick] || [], last);
-      const hint = pickHint(plays);
+      let hint;
+      if (!last) {
+        // 自由出：最小合法一手即最小单张，无需枚举（避免 20 张手牌 O(2^n) 阻塞）
+        const sorted = sortCards(hand);
+        hint = sorted.length ? [sorted[0]] : null;
+      } else {
+        hint = pickHint(enumerateLegalPlays(hand, last));
+      }
       if (!hint) { this.ddzErr(ws, "没有能压过的牌，只能过"); return; }
       try { ws.send(JSON.stringify({ type: "ddz_hint", cards: sortCards(hint) })); } catch {}
       return;
@@ -511,7 +518,7 @@ function renderPage() {
   </div>
 <script>
 (function () {
-  var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false;
+  var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false, lastHintAt = 0;
   var $ = function (id) { return document.getElementById(id); };
 
   // 与 src/messages.js 的 firstUnreadIndex 保持一致（浏览器内联脚本无法 import，故镜像一份）
@@ -717,7 +724,12 @@ function renderPage() {
     } else if (state.phase === "playing") {
       if (state.current === me) {
         addBtn("出牌", playSelected);
-        addBtn("提示", function () { ddzSend("ddz_hint"); });
+        addBtn("提示", function () {
+          var now = Date.now();
+          if (now - lastHintAt < 800) return;
+          lastHintAt = now;
+          ddzSend("ddz_hint");
+        });
         addBtn("过", function () { ddzSend("ddz_pass"); });
       }
     } else if (state.phase === "settled") {
