@@ -331,11 +331,11 @@ export function decompose(hand) {
   return { groups, pairs, singles };
 }
 
-// 破坏度：出 play 后，剩余手牌的“成型牌组数”减少越多越差
+// 破坏度：出 play 后，剩余手牌的“松散牌”越多越差
 function structureScore(cards) {
   const d = decompose(cards);
-  // 成型牌组数（顺子/连对/飞机/三条/炸弹/火箭），越多越好
-  return { groups: d.groups.length };
+  // 松散牌（未进成型牌组的散牌）数量：越少说明成型牌组保留得越完整
+  return d.singles.length + d.pairs.length * 2;
 }
 function removeCardsArr(hand, cards) {
   const p = hand.slice();
@@ -361,15 +361,13 @@ export function chooseHint(hand, last) {
       return t !== "bomb" && t !== "rocket";
     });
     if (nonBomb.length > 0) {
-      // 规则 1：破坏度最低、并列 rank 最小
-      const base = structureScore(hand).groups;
-      let best = null, bestLoss = Infinity, bestRank = Infinity;
+      // 规则 1：出牌后剩余手牌散牌最少（尽量不拆成型组），并列 rank 最小
+      let best = null, bestLoose = Infinity, bestRank = Infinity;
       for (const play of nonBomb) {
-        const after = structureScore(removeCardsArr(hand, play));
-        const loss = base - after.groups; // 拆掉成型组数（越小越好）
+        const loose = structureScore(removeCardsArr(hand, play));
         const rank = identifyPlay(play).rank;
-        if (loss < bestLoss || (loss === bestLoss && rank < bestRank)) {
-          best = play; bestLoss = loss; bestRank = rank;
+        if (loose < bestLoose || (loose === bestLoose && rank < bestRank)) {
+          best = play; bestLoose = loose; bestRank = rank;
         }
       }
       return sortCards(best);
