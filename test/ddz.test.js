@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores } from "../src/ddz.js";
+import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores, pickHint } from "../src/ddz.js";
 
 describe("makeDeck", () => {
   it("54 张，含双王，每普通点数 4 张", () => {
@@ -136,5 +136,25 @@ describe("computeScores", () => {
   it("火箭翻倍", () => {
     // base1, 0炸, 火箭 → mult = 1*2 = 2；地主赢 +4，农民 -2
     expect(computeScores(1, true, 1, 0, true)).toEqual([-2, 4, -2]);
+  });
+});
+
+describe("pickHint", () => {
+  it("空候选返回 null", () => {
+    expect(pickHint([])).toBeNull();
+  });
+  it("牌数最少优先", () => {
+    // 一手单张(1张) vs 一手对子(2张) → 选单张
+    const plays = [["5", "5"], ["6"]];
+    expect(pickHint(plays)).toEqual(["6"]);
+  });
+  it("牌数相同按 rank 最小", () => {
+    // 两手单张 6 与 9 → 选 6
+    const plays = [["9"], ["6"]];
+    expect(pickHint(plays)).toEqual(["6"]);
+  });
+  it("从多手里选最小的单张", () => {
+    const plays = [["K"], ["7"], ["10"]];
+    expect(pickHint(plays)).toEqual(["7"]);
   });
 });

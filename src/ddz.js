@@ -197,3 +197,20 @@ export function computeScores(landlordIndex, landlordWon, base, bombCount, hasRo
   }
   return res;
 }
+
+export function pickHint(plays) {
+  if (!plays || plays.length === 0) return null;
+  let best = null;
+  let bestLen = Infinity;
+  let bestRank = Infinity;
+  for (const play of plays) {
+    const info = identifyPlay(play);
+    const rank = info ? info.rank : Infinity;
+    if (play.length < bestLen || (play.length === bestLen && rank < bestRank)) {
+      best = play;
+      bestLen = play.length;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
