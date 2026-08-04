@@ -265,3 +265,28 @@ describe("chooseHint", () => {
     expect(chooseHint(hand, null)).toEqual(["3"]);
   });
 });
+
+describe("chooseHint 自由出成型组选择", () => {
+  it("bug 手牌自由出不再出 Q", () => {
+    const hand = ["6", "6", "6", "8", "9", "9", "10", "10", "J", "J", "Q", "Q", "Q", "K", "K", "A", "A", "2", "2", "x"];
+    const hint = chooseHint(hand, null);
+    expect(hint).not.toEqual(["Q"]);
+    // 应出真孤张（8 或 小王中最小者 = 8）
+    expect(hint).toEqual(["8"]);
+  });
+
+  it("全成型组时出最小组，排除炸弹", () => {
+    // 手: 5 5 5 5(炸) + 7 7 8 8 9 9(连对) → 无孤张无孤对；应出连对(最小组)，不出炸
+    const hand = ["5", "5", "5", "5", "7", "7", "8", "8", "9", "9"];
+    const hint = chooseHint(hand, null);
+    // 连对 7-9 是最小成型组（非炸）→ 出它，而不是炸 5555
+    expect(hint).toEqual(["7", "7", "8", "8", "9", "9"]);
+  });
+
+  it("含2的组被排除，优先出不含2的组", () => {
+    // 手: 2 2 2(三条含2) + 3 3 3(三条) → 应出 333 而非 222（留2控场）
+    const hand = ["3", "3", "3", "2", "2", "2"];
+    const hint = chooseHint(hand, null);
+    expect(hint).toEqual(["3", "3", "3"]);
+  });
+});

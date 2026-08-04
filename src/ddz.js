@@ -394,9 +394,12 @@ export function chooseHint(hand, last) {
     for (const p of d.pairs) if (RANK_VALUE[p[0]] < RANK_VALUE[best[0]]) best = p;
     return best.slice();
   }
-  // 只剩成型组：取点数最小的一组
-  let best = d.groups[0];
+  // 只剩成型组：取点数最小的一组（排除炸/王/含2的组，别无选择才用被排除的）
   const minRankOf = (g) => Math.min(...g.cards.map((c) => RANK_VALUE[c]));
-  for (const g of d.groups) if (minRankOf(g) < minRankOf(best)) best = g;
+  const isReserved = (g) => g.type === "bomb" || g.type === "rocket" || g.cards.includes("2");
+  const preferred = d.groups.filter((g) => !isReserved(g));
+  const pickFrom = preferred.length > 0 ? preferred : d.groups;
+  let best = pickFrom[0];
+  for (const g of pickFrom) if (minRankOf(g) < minRankOf(best)) best = g;
   return sortCards(best.cards);
 }
