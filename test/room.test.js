@@ -387,4 +387,32 @@ describe("斗地主 提示", () => {
     expect(err.text).toContain("没有能压过的牌");
     a.ws.close(); b.ws.close(); c.ws.close();
   });
+
+  it("提示：自由出时建议最小孤张", async () => {
+    const room = "hint-lead";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 100));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("ddz");
+      g.phase = "playing"; g.current = "A";
+      g.hands["A"] = ["3", "8", "8", "9", "9", "9"];
+      g.lastPlay = null; // 自由出
+      await state.storage.put("ddz", g);
+    });
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "ddz_hint" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const hint = a.msgs.filter((m) => m.type === "ddz_hint").pop();
+    expect(hint.cards).toEqual(["3"]);
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
 });

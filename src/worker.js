@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
-import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint } from "./ddz.js";
+import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -300,14 +300,7 @@ export class ChatRoom extends DurableObject {
       if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
       const hand = g.hands[nick] || [];
       const last = g.lastPlay ? g.lastPlay.cards : null;
-      let hint;
-      if (!last) {
-        // 自由出：最小合法一手即最小单张，无需枚举（避免 20 张手牌 O(2^n) 阻塞）
-        const sorted = sortCards(hand);
-        hint = sorted.length ? [sorted[0]] : null;
-      } else {
-        hint = pickHint(enumerateLegalPlays(hand, last));
-      }
+      const hint = chooseHint(hand, last);
       if (!hint) { this.ddzErr(ws, "没有能压过的牌，只能过"); return; }
       try { ws.send(JSON.stringify({ type: "ddz_hint", cards: sortCards(hint) })); } catch {}
       return;
