@@ -328,3 +328,63 @@ describe("斗地主 修复项", () => {
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 });
+
+describe("斗地主 提示", () => {
+  async function fill(room) {
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 100));
+    return { a, b, c };
+  }
+
+  it("轮到自己时提示返回一手能压过的牌", async () => {
+    const room = "hint-ok";
+    const { a, b, c } = await fill(room);
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("ddz");
+      g.phase = "playing";
+      g.current = "A";
+      g.hands["A"] = ["3", "6", "6", "9"];
+      g.lastPlay = { nick: "B", cards: ["5"], type: "single" };
+      await state.storage.put("ddz", g);
+    });
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "ddz_hint" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const hint = a.msgs.filter((m) => m.type === "ddz_hint").pop();
+    expect(hint).toBeDefined();
+    // 手里能压过单张5的最小单张是 6
+    expect(hint.cards).toEqual(["6"]);
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  it("要不起时提示只能过", async () => {
+    const room = "hint-none";
+    const { a, b, c } = await fill(room);
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("ddz");
+      g.phase = "playing";
+      g.current = "A";
+      g.hands["A"] = ["3", "4"];
+      g.lastPlay = { nick: "B", cards: ["2"], type: "single" };
+      await state.storage.put("ddz", g);
+    });
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "ddz_hint" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const err = a.msgs.filter((m) => m.type === "ddz_error").pop();
+    expect(err).toBeDefined();
+    expect(err.text).toContain("没有能压过的牌");
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});

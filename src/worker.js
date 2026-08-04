@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
-import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores } from "./ddz.js";
+import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint } from "./ddz.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -292,6 +292,17 @@ export class ChatRoom extends DurableObject {
   }
 
   async handleDdzPlay(ws, msg, g, nick) {
+    if (msg.type === "ddz_hint") {
+      if (g.phase !== "playing") { this.ddzErr(ws, "现在不能提示"); return; }
+      if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
+      const last = g.lastPlay ? g.lastPlay.cards : null;
+      const plays = enumerateLegalPlays(g.hands[nick] || [], last);
+      const hint = pickHint(plays);
+      if (!hint) { this.ddzErr(ws, "没有能压过的牌，只能过"); return; }
+      try { ws.send(JSON.stringify({ type: "ddz_hint", cards: sortCards(hint) })); } catch {}
+      return;
+    }
+
     if (msg.type === "ddz_pass") {
       if (g.phase !== "playing") { this.ddzErr(ws, "现在不能过"); return; }
       if (nick !== g.current) { this.ddzErr(ws, "还没轮到你"); return; }
