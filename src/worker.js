@@ -674,11 +674,10 @@ function renderPage() {
     var bar = $("ddzbar");
     var quit = $("ddzquit");
     if (state.phase === "none" || !state.phase) { bar.style.display = "none"; quit.style.display = "none"; $("ddzhand").innerHTML = ""; $("ddzbtns").innerHTML = ""; ddz.hand = []; ddz.selected = {}; return; }
-    // 记录 ddzbar 显示前是否贴底：面板弹出会改变消息区可视高度，需据此保持贴底
-    var barWasHidden = bar.style.display !== "block";
+    // 记录本次重渲染前是否贴底：ddzbar 面板高度变化（弹出/手牌增减/按钮增减）会改变消息区可视高度，
+    // 若之前贴底则重渲染后重新滚到底，避免出牌等广播被面板顶上去；未贴底（在翻历史）则不打扰。
     var wasBottom = atBottom();
     bar.style.display = "block";
-    if (barWasHidden && wasBottom) scrollToBottom();
     // 招募阶段与结算阶段没有可出的手牌：清空手牌数据，避免残留旧牌
     if (state.phase === "waiting" || state.phase === "settled") { ddz.hand = []; ddz.selected = {}; }
     var me = nick;
@@ -713,6 +712,11 @@ function renderPage() {
       addBtn("散桌", function () { ddzSend("ddz_disband"); });
     }
     renderHand();
+    // 面板高度可能已变化，等布局回流后若原本贴底则重新贴底
+    if (wasBottom) {
+      if (window.requestAnimationFrame) requestAnimationFrame(scrollToBottom);
+      else scrollToBottom();
+    }
   }
 
   function renderHand() {
