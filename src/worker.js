@@ -102,7 +102,10 @@ export class ChatRoom extends DurableObject {
 
   cardText(c) { return c === "x" ? "小王" : c === "X" ? "大王" : c; }
   remainStr(g) {
-    return "剩余 " + g.players.map((p) => `${p}(${(g.hands[p] || []).length})`).join(" ");
+    return "剩余 " + g.players.map((p) => {
+      const tag = g.landlord ? (p === g.landlord ? "👑" : "🌾") : "";
+      return `${tag}${p}(${(g.hands[p] || []).length})`;
+    }).join(" ");
   }
   rankBoard(g) {
     const entries = g.players.map((p) => [p, g.scores[p] || 0]);
