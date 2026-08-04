@@ -353,33 +353,32 @@ export function chooseHint(hand, last) {
   }
 
   if (last && last.length > 0) {
-    // 跟牌
+    // 跟牌：能压就亮（含要拆的）。排序键 [破坏度, 非炸优先, rank] 字典序最小。
     const candidates = enumerateLegalPlays(hand, last);
     if (candidates.length === 0) return null;
-    const nonBomb = candidates.filter((c) => {
-      const t = identifyPlay(c).type;
-      return t !== "bomb" && t !== "rocket";
-    });
-    if (nonBomb.length > 0) {
-      // 规则 1：出牌后剩余手牌散牌最少（尽量不拆成型组），并列 rank 最小
-      let best = null, bestLoose = Infinity, bestRank = Infinity;
-      for (const play of nonBomb) {
-        const loose = structureScore(removeCardsArr(hand, play));
-        const rank = identifyPlay(play).rank;
-        if (loose < bestLoose || (loose === bestLoose && rank < bestRank)) {
-          best = play; bestLoose = loose; bestRank = rank;
-        }
+    const isBombOrRocket = (play) => {
+      const t = identifyPlay(play).type;
+      return t === "bomb" || t === "rocket";
+    };
+    let best = null;
+    let bestKey = null;
+    for (const play of candidates) {
+      const key = [
+        structureScore(removeCardsArr(hand, play)),
+        isBombOrRocket(play) ? 1 : 0,
+        identifyPlay(play).rank,
+      ];
+      if (
+        bestKey === null ||
+        key[0] < bestKey[0] ||
+        (key[0] === bestKey[0] && key[1] < bestKey[1]) ||
+        (key[0] === bestKey[0] && key[1] === bestKey[1] && key[2] < bestKey[2])
+      ) {
+        best = play;
+        bestKey = key;
       }
-      return sortCards(best);
     }
-    // 规则 2：只有炸弹/火箭能压
-    const bombs = candidates.filter((c) => identifyPlay(c).type === "bomb");
-    if (bombs.length > 0) {
-      bombs.sort((a, b) => identifyPlay(a).rank - identifyPlay(b).rank);
-      return sortCards(bombs[0]);
-    }
-    const rocket = candidates.find((c) => identifyPlay(c).type === "rocket");
-    return rocket ? sortCards(rocket) : null;
+    return sortCards(best);
   }
 
   // 自由出 规则 3：先清散牌

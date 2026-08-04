@@ -290,3 +290,41 @@ describe("chooseHint 自由出成型组选择", () => {
     expect(hint).toEqual(["3", "3", "3"]);
   });
 });
+
+describe("chooseHint 跟牌新逻辑（能压就亮/优先不拆/非炸优先）", () => {
+  it("有不拆的普通牌能压 → 出不拆的（破坏度优先）", () => {
+    // 手: 6(孤张) + 8 9 10 J Q(顺子)；上家出 5 → 出 6，不拆顺子
+    const hand = ["6", "8", "9", "10", "J", "Q"];
+    expect(chooseHint(hand, ["5"])).toEqual(["6"]);
+  });
+
+  it("只有拆牌才能压 → 仍返回拆牌那手（能压就亮，不返回 null）", () => {
+    // 手: 8 9 10 J Q(顺子)，无孤张；上家出 5 → 只能从顺子里拆一张压，应返回 8（最小能压且破坏度一致）
+    const hand = ["8", "9", "10", "J", "Q"];
+    const hint = chooseHint(hand, ["5"]);
+    expect(hint).not.toBeNull();
+    expect(hint).toEqual(["8"]);
+  });
+
+  it("同破坏度普通牌与炸弹都能压 → 出普通牌（非炸优先）", () => {
+    // 手: 6(孤张) + 7 7 7 7(炸)；上家出 5 → 6 和炸都能压且都不拆(炸整出不算拆)，应出 6
+    const hand = ["6", "7", "7", "7", "7"];
+    expect(chooseHint(hand, ["5"])).toEqual(["6"]);
+  });
+
+  it("只有炸弹能压 → 亮炸弹", () => {
+    // 手: 3 + 7 7 7 7；上家出对 A → 无普通牌能压对A，炸弹能压 → 出 7777
+    const hand = ["3", "7", "7", "7", "7"];
+    expect(chooseHint(hand, ["A", "A"])).toEqual(["7", "7", "7", "7"]);
+  });
+
+  it("真要不起 → null", () => {
+    // 手: 3 4；上家出 2 → 压不过、整手也压不过 → null
+    expect(chooseHint(["3", "4"], ["2"])).toBeNull();
+  });
+
+  it("规则0仍优先：整手能压则全出", () => {
+    // 手: 一对 KK；上家出一对 5 → 全出 KK
+    expect(chooseHint(["K", "K"], ["5", "5"])).toEqual(["K", "K"]);
+  });
+});
