@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores, pickHint } from "../src/ddz.js";
+import { RANK_VALUE, makeDeck, deal, sortCards, identifyPlay, beats, enumerateLegalPlays, resolveBids, computeScores, pickHint, decompose } from "../src/ddz.js";
 
 describe("makeDeck", () => {
   it("54 张，含双王，每普通点数 4 张", () => {
@@ -156,5 +156,37 @@ describe("pickHint", () => {
   it("从多手里选最小的单张", () => {
     const plays = [["K"], ["7"], ["10"]];
     expect(pickHint(plays)).toEqual(["7"]);
+  });
+});
+
+describe("decompose", () => {
+  it("提取顺子后剩散单", () => {
+    // 3 4 5 6 7 顺子 + 9 孤张
+    const d = decompose(["3", "4", "5", "6", "7", "9"]);
+    expect(d.groups.some((g) => g.type === "straight" && g.cards.length === 5)).toBe(true);
+    expect(d.singles).toContain("9");
+  });
+  it("对子与孤张区分", () => {
+    // 8 8 对 + 5 孤张（无顺子/连对）
+    const d = decompose(["8", "8", "5"]);
+    expect(d.pairs.some((p) => p[0] === "8" && p[1] === "8")).toBe(true);
+    expect(d.singles).toEqual(["5"]);
+  });
+  it("炸弹进 groups", () => {
+    const d = decompose(["9", "9", "9", "9", "3"]);
+    expect(d.groups.some((g) => g.type === "bomb")).toBe(true);
+    expect(d.singles).toContain("3");
+  });
+  it("三条进 groups", () => {
+    const d = decompose(["7", "7", "7", "4"]);
+    expect(d.groups.some((g) => g.type === "triple")).toBe(true);
+    expect(d.singles).toContain("4");
+  });
+  it("连对进 groups", () => {
+    // 3 3 4 4 5 5 连对
+    const d = decompose(["3", "3", "4", "4", "5", "5"]);
+    expect(d.groups.some((g) => g.type === "pair_straight")).toBe(true);
+    expect(d.pairs.length).toBe(0);
+    expect(d.singles.length).toBe(0);
   });
 });

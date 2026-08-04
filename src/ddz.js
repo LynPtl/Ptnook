@@ -214,3 +214,119 @@ export function pickHint(plays) {
   }
   return best;
 }
+
+// 贪心把手牌分解为成型牌组 / 孤对 / 孤张
+export function decompose(hand) {
+  let pool = sortCards(hand);
+  const groups = [];
+
+  const removeCards = (arr, cards) => {
+    const p = arr.slice();
+    for (const c of cards) { const i = p.indexOf(c); if (i >= 0) p.splice(i, 1); }
+    return p;
+  };
+  const cnt = () => {
+    const m = new Map();
+    for (const c of pool) m.set(c, (m.get(c) || 0) + 1);
+    return m;
+  };
+
+  // 1) 王炸
+  if (pool.includes("x") && pool.includes("X")) {
+    groups.push({ type: "rocket", cards: ["x", "X"] });
+    pool = removeCards(pool, ["x", "X"]);
+  }
+  // 2) 炸弹
+  for (;;) {
+    const m = cnt();
+    let bomb = null;
+    for (const [c, k] of m) if (k === 4) { bomb = c; break; }
+    if (!bomb) break;
+    groups.push({ type: "bomb", cards: [bomb, bomb, bomb, bomb] });
+    pool = removeCards(pool, [bomb, bomb, bomb, bomb]);
+  }
+  // 3) 飞机（≥2 连续三条），最长优先
+  for (;;) {
+    const m = cnt();
+    const trips = [...m.entries()].filter(([, k]) => k >= 3).map(([c]) => RANK_VALUE[c]).sort((a, b) => a - b);
+    let best = [];
+    for (let i = 0; i < trips.length; i++) {
+      let run = [trips[i]];
+      for (let j = i + 1; j < trips.length; j++) {
+        if (trips[j] === run[run.length - 1] + 1 && trips[j] < 15) run.push(trips[j]);
+        else break;
+      }
+      if (run.length > best.length) best = run;
+    }
+    if (best.length < 2) break;
+    const cards = [];
+    for (const v of best) {
+      const c = Object.keys(RANK_VALUE).find((k) => RANK_VALUE[k] === v);
+      cards.push(c, c, c);
+    }
+    groups.push({ type: "plane", cards });
+    pool = removeCards(pool, cards);
+  }
+  // 4) 顺子（≥5 连续单张，不含 2/王），最长优先
+  for (;;) {
+    const m = cnt();
+    const avail = [...m.keys()].map((c) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
+    let best = [];
+    for (let i = 0; i < avail.length; i++) {
+      let run = [avail[i]];
+      for (let j = i + 1; j < avail.length; j++) {
+        if (avail[j] === run[run.length - 1] + 1) run.push(avail[j]);
+        else break;
+      }
+      if (run.length > best.length) best = run;
+    }
+    if (best.length < 5) break;
+    const cards = best.map((v) => Object.keys(RANK_VALUE).find((k) => RANK_VALUE[k] === v));
+    groups.push({ type: "straight", cards });
+    pool = removeCards(pool, cards);
+  }
+  // 5) 连对（≥3 连续对子，不含 2/王），最长优先
+  for (;;) {
+    const m = cnt();
+    const pairRanks = [...m.entries()].filter(([, k]) => k >= 2).map(([c]) => RANK_VALUE[c]).filter((v) => v < 15).sort((a, b) => a - b);
+    let best = [];
+    for (let i = 0; i < pairRanks.length; i++) {
+      let run = [pairRanks[i]];
+      for (let j = i + 1; j < pairRanks.length; j++) {
+        if (pairRanks[j] === run[run.length - 1] + 1) run.push(pairRanks[j]);
+        else break;
+      }
+      if (run.length > best.length) best = run;
+    }
+    if (best.length < 3) break;
+    const cards = [];
+    for (const v of best) {
+      const c = Object.keys(RANK_VALUE).find((k) => RANK_VALUE[k] === v);
+      cards.push(c, c);
+    }
+    groups.push({ type: "pair_straight", cards });
+    pool = removeCards(pool, cards);
+  }
+  // 6) 三条
+  for (;;) {
+    const m = cnt();
+    let trip = null;
+    for (const [c, k] of m) if (k === 3) { trip = c; break; }
+    if (!trip) break;
+    groups.push({ type: "triple", cards: [trip, trip, trip] });
+    pool = removeCards(pool, [trip, trip, trip]);
+  }
+  // 7) 剩余对子（孤对）
+  const pairs = [];
+  for (;;) {
+    const m = cnt();
+    let pr = null;
+    for (const [c, k] of m) if (k === 2) { pr = c; break; }
+    if (!pr) break;
+    pairs.push([pr, pr]);
+    pool = removeCards(pool, [pr, pr]);
+  }
+  // 8) 剩余孤张
+  const singles = sortCards(pool);
+  return { groups, pairs, singles };
+}
