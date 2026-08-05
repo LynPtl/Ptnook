@@ -499,6 +499,7 @@ function renderPage() {
       <span class="room" id="roomLabel"></span>
       <span class="count" id="countLabel"></span>
       <button id="ddzquit" style="display:none">退出牌局</button>
+      <button id="soundBtn" style="font-size:16px;padding:4px 8px" title="消息提示音开关">🔔</button>
       <button id="leave">离开</button>
     </header>
     <div id="status"></div>
@@ -609,6 +610,8 @@ function renderPage() {
     $("messages").innerHTML = "";
   };
 
+  $("soundBtn").onclick = toggleSound;
+
   $("ddzquit").onclick = function () { ddzSend("ddz_disband"); };
 
   function connect() {
@@ -622,7 +625,13 @@ function renderPage() {
     ws.onmessage = function (e) {
       var m;
       try { m = JSON.parse(e.data); } catch (_) { return; }
-      if (m.type === "chat") addChat(m.nick, m.text, m.ts);
+      if (m.type === "chat") {
+        addChat(m.nick, m.text, m.ts);
+        // 新消息响铃：非自己发的、且（不在前台或不在底部）
+        if (m.nick !== nick && (document.hidden || !atBottom())) {
+          playNotificationSound();
+        }
+      }
       else if (m.type === "system") addSystem(m.text);
       else if (m.type === "presence") $("countLabel").textContent = "在线 " + m.count + " 人";
       else if (m.type === "history") {
@@ -652,6 +661,36 @@ function renderPage() {
   }
 
   var ddz = { phase: "none", hand: [], selected: {} };
+
+  // 消息提示音
+  var soundMuted = false, audioCtx = null;
+  try { soundMuted = localStorage.getItem("ptnook:sound:muted") === "1"; } catch (_) {}
+  $("soundBtn").textContent = soundMuted ? "🔇" : "🔔";
+  function ensureAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  }
+  function toggleSound() {
+    soundMuted = !soundMuted;
+    try { localStorage.setItem("ptnook:sound:muted", soundMuted ? "1" : ""); } catch (_) {}
+    $("soundBtn").textContent = soundMuted ? "🔇" : "🔔";
+  }
+  function playNotificationSound() {
+    if (soundMuted) return;
+    try {
+      ensureAudioCtx();
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = 660;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.2);
+    } catch (_) {}
+  }
 
   function ddzSend(type, extra) {
     if (!ws || ws.readyState !== 1) return;
