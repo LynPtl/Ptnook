@@ -895,6 +895,19 @@ function renderPage() {
   #ddzhand { display: flex; flex-wrap: wrap; gap: 4px; }
   #ddzhand .card { border: 1px solid #ccc; border-radius: 6px; padding: 4px 8px; font-size: 15px; cursor: pointer; user-select: none; background: #fafafa; }
   #ddzhand .card.sel { background: #2f6feb; color: #fff; border-color: #2f6feb; transform: translateY(-4px); }
+  #pokertable { border-top: 1px solid #eee; background: #0f5132; color: #fff; padding: 8px 12px; display: none; }
+  #pokertable .board { min-height: 26px; margin-bottom: 6px; font-size: 13px; }
+  #pokertable .card { display: inline-block; background: #fff; color: #111; border-radius: 4px; padding: 2px 6px; margin-right: 4px; font-weight: 600; }
+  #pokertable .card.red { color: #d11; }
+  #pokertable .pot { font-size: 13px; margin-bottom: 6px; }
+  #pokertable .seats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  #pokertable .seat { background: rgba(255,255,255,.12); border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+  #pokertable .seat.act { outline: 2px solid #ffd43b; }
+  #pokertable .seat.fold { opacity: .45; }
+  #pokertable .seat .tag { font-weight: 700; margin-left: 4px; }
+  #pokerbtns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #pokerbtns button { padding: 6px 10px; font-size: 14px; }
+  #pokerbtns input { width: 64px; padding: 4px 6px; border-radius: 6px; border: 1px solid #ccc; }
   #composer { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #eee; align-items: flex-end; }
   #composer textarea { flex: 1; resize: none; height: 40px; max-height: 120px; line-height: 20px; font-family: inherit; }
   #status { font-size: 12px; color: #c00; padding: 0 16px; }
@@ -919,6 +932,12 @@ function renderPage() {
     <div id="ddzbar">
       <div class="btns" id="ddzbtns"></div>
       <div id="ddzhand"></div>
+    </div>
+    <div id="pokertable">
+      <div class="board" id="pokerboard"></div>
+      <div class="pot" id="pokerpot"></div>
+      <div class="seats" id="pokerseats"></div>
+      <div id="pokerbtns"></div>
     </div>
     <form id="composer">
       <textarea id="text" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" maxlength="2000" rows="1"></textarea>
@@ -1052,6 +1071,9 @@ function renderPage() {
       else if (m.type === "ddz_hand") { ddz.hand = m.cards || []; ddz.selected = {}; renderHand(); }
       else if (m.type === "ddz_hint") applyHint(m.cards || []);
       else if (m.type === "ddz_error") addSystem("⚠️ " + m.text);
+      else if (m.type === "poker_state") { if (m.resumed) addSystem("【牌局恢复】德州扑克，阶段 " + m.phase); renderPoker(m); }
+      else if (m.type === "poker_hole") { poker.hole = m.cards || []; renderPoker(poker.last); }
+      else if (m.type === "poker_error") addSystem("♠ " + m.text);
     };
     ws.onclose = function () {
       ws = null;
@@ -1186,6 +1208,124 @@ function renderPage() {
     renderHand();
   }
 
+  var poker = { phase: "none", hole: [], last: null };
+
+  function pokerSend(type, extra) {
+    if (!ws || ws.readyState !== 1) return;
+    var o = { type: type };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    ws.send(JSON.stringify(o));
+  }
+
+  function pokerCard(tok) {
+    if (!tok) return "";
+    var r = tok.slice(0, -1), s = tok.slice(-1);
+    var sym = { s: "♠", h: "♥", d: "♦", c: "♣" }[s] || "";
+    var rank = r === "T" ? "10" : r;
+    return { text: rank + sym, red: (s === "h" || s === "d") };
+  }
+
+  function pokerCardEl(tok) {
+    var info = pokerCard(tok);
+    var el = document.createElement("span");
+    el.className = "card" + (info.red ? " red" : "");
+    el.textContent = info.text;
+    return el;
+  }
+
+  function fmtBB(n) {
+    if (n == null) return "0";
+    return (Math.round(n * 10) / 10).toString();
+  }
+
+  function renderPoker(state) {
+    if (!state) return;
+    poker.last = state;
+    poker.phase = state.phase;
+    var table = $("pokertable");
+    if (state.phase === "none" || !state.phase) {
+      table.style.display = "none";
+      $("pokerboard").innerHTML = ""; $("pokerseats").innerHTML = ""; $("pokerbtns").innerHTML = ""; $("pokerpot").textContent = "";
+      poker.hole = [];
+      return;
+    }
+    var wasBottom = atBottom();
+    table.style.display = "block";
+    var me = nick;
+    var seats = state.seats || [];
+    var mySeat = null;
+    seats.forEach(function (s) { if (s && s.nick === me) mySeat = s; });
+
+    // 公共牌（+ 自己底牌）
+    var boardBox = $("pokerboard");
+    boardBox.innerHTML = "";
+    var lbl = document.createElement("span"); lbl.textContent = "公共牌 "; boardBox.appendChild(lbl);
+    (state.board || []).forEach(function (c) { boardBox.appendChild(pokerCardEl(c)); });
+    if (poker.hole && poker.hole.length) {
+      var ml = document.createElement("span"); ml.textContent = "  我的手牌 "; boardBox.appendChild(ml);
+      poker.hole.forEach(function (c) { boardBox.appendChild(pokerCardEl(c)); });
+    }
+
+    // 底池
+    $("pokerpot").textContent = "底池 " + fmtBB(state.pot) + "bb" + (state.currentBet ? "（当前下注 " + fmtBB(state.currentBet) + "bb）" : "");
+
+    // 座位
+    var seatsBox = $("pokerseats");
+    seatsBox.innerHTML = "";
+    seats.forEach(function (s) {
+      if (!s) return;
+      var el = document.createElement("div");
+      el.className = "seat" + (state.toAct === s.seat ? " act" : "") + (s.hasFolded ? " fold" : "");
+      var name = document.createElement("span");
+      name.textContent = s.nick + " " + fmtBB(s.stack) + "bb";
+      el.appendChild(name);
+      if (s.pos) { var tg = document.createElement("span"); tg.className = "tag"; tg.textContent = s.pos; el.appendChild(tg); }
+      var st = "";
+      if (s.hasFolded) st = " 弃";
+      else if (s.isAllIn) st = " 全下";
+      else if (s.streetBet) st = " 下" + fmtBB(s.streetBet);
+      if (st) { var stEl = document.createElement("span"); stEl.textContent = st; el.appendChild(stEl); }
+      if (s.hole) { s.hole.forEach(function (c) { el.appendChild(pokerCardEl(c)); }); }
+      seatsBox.appendChild(el);
+    });
+
+    // 按钮区
+    var btns = $("pokerbtns");
+    btns.innerHTML = "";
+    function addBtn(label, fn) { var b = document.createElement("button"); b.textContent = label; b.onclick = fn; btns.appendChild(b); }
+    var isSeated = !!mySeat;
+    if (state.phase === "waiting") {
+      if (!isSeated) addBtn("加入牌桌", function () { pokerSend("poker_join"); });
+      if (isSeated) addBtn("下一手", function () { pokerSend("poker_next"); });
+      addBtn("取消", function () { pokerSend("poker_cancel"); });
+    } else if (state.phase === "settled") {
+      if (mySeat && mySeat.stack > 0) addBtn("下一手", function () { pokerSend("poker_next"); });
+      if (mySeat && mySeat.stack === 0) addBtn("buy-in（+50bb）", function () { pokerSend("poker_buyin"); });
+      if (!isSeated) addBtn("加入牌桌", function () { pokerSend("poker_join"); });
+      addBtn("散桌", function () { pokerSend("poker_disband"); });
+    } else if (state.toAct != null && mySeat && state.toAct === mySeat.seat) {
+      var toCall = (state.currentBet || 0) - (mySeat.streetBet || 0);
+      if (toCall <= 0) addBtn("过牌", function () { pokerSend("poker_action", { action: "check" }); });
+      else addBtn("跟注 " + fmtBB(Math.min(toCall, mySeat.stack)) + "bb", function () { pokerSend("poker_action", { action: "call" }); });
+      var input = document.createElement("input");
+      input.type = "number"; input.step = "0.5";
+      var minTo = (state.currentBet ? state.currentBet + (state.minRaise || 1) : (state.minRaise || 1));
+      input.value = fmtBB(minTo); input.min = fmtBB(minTo);
+      btns.appendChild(input);
+      if (!state.currentBet) addBtn("下注", function () { pokerSend("poker_action", { action: "bet", amount: Number(input.value) }); });
+      else addBtn("加注到", function () { pokerSend("poker_action", { action: "raise", amount: Number(input.value) }); });
+      addBtn("½池", function () { var half = (state.currentBet || 0) + (state.pot || 0) / 2; input.value = fmtBB(half); });
+      addBtn("全下", function () { pokerSend("poker_action", { action: "allin" }); });
+      addBtn("弃牌", function () { pokerSend("poker_action", { action: "fold" }); });
+    }
+    // 非行动方但在座：进行中也可散桌
+    if (isSeated && (state.phase === "preflop" || state.phase === "flop" || state.phase === "turn" || state.phase === "river")) {
+      addBtn("散桌", function () { pokerSend("poker_disband"); });
+    }
+
+    if (wasBottom) { if (window.requestAnimationFrame) requestAnimationFrame(scrollToBottom); else scrollToBottom(); }
+  }
+
   function addChat(n, t, ts) {
     var wasBottom = atBottom();
     var div = document.createElement("div");
@@ -1221,6 +1361,11 @@ function renderPage() {
     if (!t || !ws || ws.readyState !== 1) return;
     if (t === "/ddz") {
       ws.send(JSON.stringify({ type: "ddz_start" }));
+      $("text").value = "";
+      return;
+    }
+    if (t === "/poker") {
+      ws.send(JSON.stringify({ type: "poker_start" }));
       $("text").value = "";
       return;
     }
