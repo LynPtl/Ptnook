@@ -78,3 +78,89 @@ export function evaluateHand(cards) {
 export function compareHands(a, b) {
   return compareRank(a, b);
 }
+
+export function buildPots(players) {
+  const levels = [...new Set(players.filter((p) => p.total > 0).map((p) => p.total))].sort((a, b) => a - b);
+  const raw = [];
+  let prev = 0;
+  for (const lvl of levels) {
+    const layer = lvl - prev;
+    const contributors = players.filter((p) => p.total >= lvl);
+    const amount = layer * contributors.length;
+    const eligible = contributors.filter((p) => !p.folded).map((p) => p.seat).sort((a, b) => a - b);
+    if (amount > 0) raw.push({ amount, eligible });
+    prev = lvl;
+  }
+  // 合并相邻 eligible 集合相同的层
+  const merged = [];
+  for (const pot of raw) {
+    const last = merged[merged.length - 1];
+    if (last && last.eligible.length === pot.eligible.length && last.eligible.every((s, i) => s === pot.eligible[i])) {
+      last.amount += pot.amount;
+    } else {
+      merged.push({ amount: pot.amount, eligible: pot.eligible.slice() });
+    }
+  }
+  return merged;
+}
+
+export function derivePositions(activeSeats, buttonSeat) {
+  const n = activeSeats.length;
+  const bi = activeSeats.indexOf(buttonSeat);
+  const rot = activeSeats.slice(bi).concat(activeSeats.slice(0, bi)); // [button, ...顺时针]
+  if (n === 2) {
+    const [d, other] = rot;
+    return { button: d, sb: d, bb: other, preflopOrder: [d, other], postflopOrder: [other, d] };
+  }
+  const [d, sb, bb] = rot; // n === 3
+  return { button: d, sb, bb, preflopOrder: [d, sb, bb], postflopOrder: [sb, bb, d] };
+}
+
+export function minRaiseTo(currentBet, minRaise) {
+  return currentBet + minRaise;
+}
+
+export function validateAction(ctx, action, amount) {
+  const { currentBet, minRaise, streetBet, stack } = ctx;
+  const bb = ctx.bigBlind;
+  if (stack <= 0) return { ok: false, error: "无筹码可行动" };
+  if (action === "fold") {
+    return { ok: true, added: 0, streetBetAfter: streetBet, allIn: false, raised: false, folded: true };
+  }
+  if (action === "check") {
+    if (streetBet !== currentBet) return { ok: false, error: "面对下注不能过牌" };
+    return { ok: true, added: 0, streetBetAfter: streetBet, allIn: false, raised: false };
+  }
+  if (action === "call") {
+    if (currentBet <= streetBet) return { ok: false, error: "无需跟注，可过牌" };
+    const added = Math.min(currentBet - streetBet, stack);
+    return { ok: true, added, streetBetAfter: streetBet + added, allIn: added === stack, raised: false };
+  }
+  if (action === "allin") {
+    const added = stack;
+    const after = streetBet + added;
+    return { ok: true, added, streetBetAfter: after, allIn: true, raised: after > currentBet };
+  }
+  if (action === "bet") {
+    if (currentBet !== 0) return { ok: false, error: "已有下注，请用加注" };
+    if (typeof amount !== "number" || amount <= 0) return { ok: false, error: "下注额无效" };
+    const added = amount - streetBet;
+    if (added > stack) return { ok: false, error: "筹码不足" };
+    const allIn = added === stack;
+    if (amount < bb && !allIn) return { ok: false, error: `最小下注 ${bb}bb` };
+    return { ok: true, added, streetBetAfter: amount, allIn, raised: true };
+  }
+  if (action === "raise") {
+    if (currentBet === 0) return { ok: false, error: "无下注可加注，请用下注" };
+    if (typeof amount !== "number") return { ok: false, error: "加注额无效" };
+    const added = amount - streetBet;
+    if (added <= 0) return { ok: false, error: "加注额无效" };
+    if (added > stack) return { ok: false, error: "筹码不足" };
+    const allIn = added === stack;
+    if (amount < currentBet + minRaise && !allIn) {
+      return { ok: false, error: `最小加注到 ${currentBet + minRaise}bb` };
+    }
+    return { ok: true, added, streetBetAfter: amount, allIn, raised: amount > currentBet };
+  }
+  return { ok: false, error: "未知动作" };
+}
