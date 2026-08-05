@@ -586,6 +586,34 @@ describe("德州扑克 摊牌与边池", () => {
     });
     a.ws.close(); b.ws.close(); c.ws.close();
   });
+
+  it("平分零头：多出的 0.5bb 给庄家左手第一个赢家", async () => {
+    const room = "pk-split-rem";
+    const { a, b, c } = await seat3(room);
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.phase = "river";
+      g.board = ["As", "Kd", "Qh", "8c", "3s"];
+      g.buttonSeat = 1;
+      g.handSeats = [0, 1, 2];
+      g.positions = { button: 1, sb: 2, bb: 0, preflopOrder: [1, 2, 0], postflopOrder: [2, 0, 1] };
+      // A/B 都用公共牌打同一手高牌，C 弃牌但投入 0.5；A/B 等额投入，底池 2.5bb = 5 个 0.5 单位。
+      // 庄家为 B(seat1)，赢家 A(seat0)/B(seat1) 中，庄家左手第一个赢家是 A(seat0)，应多拿 0.5。
+      g.seats[0] = { nick: "A", stack: 49, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["2d", "4c"], streetBet: 0, totalBet: 1 };
+      g.seats[1] = { nick: "B", stack: 49, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["2h", "4d"], streetBet: 0, totalBet: 1 };
+      g.seats[2] = { nick: "C", stack: 49.5, inHand: false, hasFolded: true, isAllIn: false, holeCards: ["2c", "5d"], streetBet: 0, totalBet: 0.5 };
+      await state.storage.put("holdem", g);
+      await instance.showdown(g);
+      const done = await state.storage.get("holdem");
+      expect(done.seats[0].stack).toBe(50.5);
+      expect(done.seats[1].stack).toBe(50);
+      const total = done.seats.reduce((sum, s) => sum + (s ? s.stack : 0), 0);
+      expect(total).toBe(150);
+    });
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
 });
 
 describe("德州扑克 手间流转", () => {
@@ -633,6 +661,44 @@ describe("德州扑克 手间流转", () => {
       instance.startHand(g);
       expect(g.handSeats.length).toBe(2);
       expect(g.seats[2].inHand).toBe(false);
+    });
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  it("庄家 preflop 弃牌后，postflop 从庄家左手第一个在手玩家行动", async () => {
+    const room = "pk-button-fold-order";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.phase = "preflop";
+      g.buttonSeat = 1;
+      g.handSeats = [0, 1, 2];
+      g.board = [];
+      g.deck = ["2s", "3s", "4s", "5s", "6s"];
+      g.positions = { button: 1, sb: 2, bb: 0, preflopOrder: [1, 2, 0], postflopOrder: [2, 0, 1] };
+      g.seats[0] = { nick: "A", stack: 49, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["As", "Ad"], streetBet: 1, totalBet: 1 };
+      g.seats[1] = { nick: "B", stack: 50, inHand: false, hasFolded: true, isAllIn: false, holeCards: ["Ks", "Kd"], streetBet: 0, totalBet: 0 };
+      g.seats[2] = { nick: "C", stack: 49, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["Qs", "Qd"], streetBet: 1, totalBet: 1 };
+      g.currentBet = 1;
+      g.minRaise = 1;
+      g.needToAct = [];
+      g.toAct = null;
+      await instance.advanceStreet(g);
+      const done = await state.storage.get("holdem");
+      expect(done.phase).toBe("flop");
+      expect(done.board).toEqual(["2s", "3s", "4s"]);
+      expect(done.needToAct).toEqual([2, 0]);
+      expect(done.toAct).toBe(2);
     });
     a.ws.close(); b.ws.close(); c.ws.close();
   });

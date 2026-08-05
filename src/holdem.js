@@ -123,6 +123,7 @@ export function minRaiseTo(currentBet, minRaise) {
 export function validateAction(ctx, action, amount) {
   const { currentBet, minRaise, streetBet, stack } = ctx;
   const bb = ctx.bigBlind;
+  const isHalfBb = (v) => Number.isFinite(v) && v * 2 === Math.round(v * 2);
   if (stack <= 0) return { ok: false, error: "无筹码可行动" };
   if (action === "fold") {
     return { ok: true, added: 0, streetBetAfter: streetBet, allIn: false, raised: false, folded: true };
@@ -144,6 +145,7 @@ export function validateAction(ctx, action, amount) {
   if (action === "bet") {
     if (currentBet !== 0) return { ok: false, error: "已有下注，请用加注" };
     if (typeof amount !== "number" || amount <= 0) return { ok: false, error: "下注额无效" };
+    if (!isHalfBb(amount)) return { ok: false, error: "下注额需为 0.5bb 的整数倍" };
     const added = amount - streetBet;
     if (added > stack) return { ok: false, error: "筹码不足" };
     const allIn = added === stack;
@@ -153,6 +155,7 @@ export function validateAction(ctx, action, amount) {
   if (action === "raise") {
     if (currentBet === 0) return { ok: false, error: "无下注可加注，请用下注" };
     if (typeof amount !== "number") return { ok: false, error: "加注额无效" };
+    if (!isHalfBb(amount)) return { ok: false, error: "加注额需为 0.5bb 的整数倍" };
     const added = amount - streetBet;
     if (added <= 0) return { ok: false, error: "加注额无效" };
     if (added > stack) return { ok: false, error: "筹码不足" };

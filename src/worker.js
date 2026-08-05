@@ -359,9 +359,8 @@ export class ChatRoom extends DurableObject {
       await this.advanceStreet(g);
       return;
     }
-    const active = g.handSeats.filter((i) => g.seats[i] && g.seats[i].inHand);
-    const pos = derivePositions(active, g.buttonSeat);
-    g.needToAct = pos.postflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
+    const postflopOrder = this.orderFromButton(g, this.inHandSeats(g));
+    g.needToAct = postflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
     g.toAct = g.needToAct.length ? g.needToAct[0] : null;
     await this.putPoker(g);
     await this.sendPokerState(g);
@@ -1312,8 +1311,9 @@ function renderPage() {
       var minTo = (state.currentBet ? state.currentBet + (state.minRaise || 1) : (state.minRaise || 1));
       input.value = fmtBB(minTo); input.min = fmtBB(minTo);
       btns.appendChild(input);
-      if (!state.currentBet) addBtn("下注", function () { pokerSend("poker_action", { action: "bet", amount: Number(input.value) }); });
-      else addBtn("加注到", function () { pokerSend("poker_action", { action: "raise", amount: Number(input.value) }); });
+      function inputAmount() { return Math.round(Number(input.value) * 2) / 2; }
+      if (!state.currentBet) addBtn("下注", function () { pokerSend("poker_action", { action: "bet", amount: inputAmount() }); });
+      else addBtn("加注到", function () { pokerSend("poker_action", { action: "raise", amount: inputAmount() }); });
       addBtn("½池", function () { var half = (state.currentBet || 0) + (state.pot || 0) / 2; input.value = fmtBB(half); });
       addBtn("全下", function () { pokerSend("poker_action", { action: "allin" }); });
       addBtn("弃牌", function () { pokerSend("poker_action", { action: "fold" }); });

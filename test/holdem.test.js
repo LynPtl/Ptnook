@@ -190,6 +190,17 @@ describe("validateAction 下注合法性", () => {
     expect(r.ok).toBe(true);
     expect(r.folded).toBe(true);
   });
+  it("bet/raise 金额必须是 0.5bb 的整数倍", () => {
+    const badBet = validateAction({ currentBet: 0, minRaise: 1, bigBlind: bb, streetBet: 0, stack: 50 }, "bet", 2.3);
+    expect(badBet.ok).toBe(false);
+    const goodBet = validateAction({ currentBet: 0, minRaise: 1, bigBlind: bb, streetBet: 0, stack: 50 }, "bet", 1.5);
+    expect(goodBet.ok).toBe(true);
+
+    const badRaise = validateAction({ currentBet: 2, minRaise: 2, bigBlind: bb, streetBet: 0, stack: 50 }, "raise", 4.3);
+    expect(badRaise.ok).toBe(false);
+    const goodRaise = validateAction({ currentBet: 2, minRaise: 2, bigBlind: bb, streetBet: 0, stack: 50 }, "raise", 4);
+    expect(goodRaise.ok).toBe(true);
+  });
 });
 
 describe("minRaiseTo", () => {
