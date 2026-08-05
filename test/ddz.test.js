@@ -335,3 +335,43 @@ describe("chooseHint 跟牌新逻辑（能压就亮/优先不拆/非炸优先）
     expect(chooseHint(["K", "K"], ["5", "5"])).toEqual(["K", "K"]);
   });
 });
+
+describe("chooseHint 跟牌度量修复", () => {
+  it("KKA 跟单Q：出 A 不拆对", () => {
+    // 出 A→剩 KK(对,0孤张)；出 K→剩 KA(2孤张) → 应出 A
+    expect(chooseHint(["K", "K", "A"], ["Q"])).toEqual(["A"]);
+  });
+
+  it("火箭+其他牌跟单2：出单小王，不出火箭（留大王与其余牌）", () => {
+    // 手里除双王外还有一堆别的牌，整手不是合法牌型 → 不触发规则0 → 跟牌排序
+    // 单小王(powerTier0)能压单2；火箭 powerTier2 → 应出单小王，保留大王和其他牌
+    const hand = ["3", "3", "5", "7", "9", "10", "x", "X"];
+    expect(chooseHint(hand, ["2"])).toEqual(["x"]);
+  });
+
+  it("削长顺子回归：6连+孤J 跟单3 → 出 J 不拆顺", () => {
+    const hand = ["4", "5", "6", "7", "8", "9", "J"];
+    expect(chooseHint(hand, ["3"])).toEqual(["J"]);
+  });
+
+  it("只有炸能压 → 出炸（能压就亮）", () => {
+    // 手 3 + 7777；上家对A：无普通牌能压对A，炸能 → 出 7777
+    expect(chooseHint(["3", "7", "7", "7", "7"], ["A", "A"])).toEqual(["7", "7", "7", "7"]);
+  });
+
+  it("真要不起 → null", () => {
+    expect(chooseHint(["3", "4"], ["2"])).toBeNull();
+  });
+
+  it("规则0整手能压 → 全出", () => {
+    expect(chooseHint(["K", "K"], ["5", "5"])).toEqual(["K", "K"]);
+  });
+});
+
+describe("structureScore 只数孤张（通过 chooseHint 间接验证）", () => {
+  it("保留对子不算破坏：跟单牌时优先保留成型对", () => {
+    // 手 3 3 4：上家出 单2？压不过。换：上家出 单K，手 A A 3 → 出3?3压不过K；出单A(拆对)剩A3；出对? 对不压单。
+    // 直接用 KKA 已覆盖；此处补一个：手 5 5 6，上家出 单4 → 出 6(孤张,剩55对) 而非拆对出5
+    expect(chooseHint(["5", "5", "6"], ["4"])).toEqual(["6"]);
+  });
+});

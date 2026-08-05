@@ -334,8 +334,8 @@ export function decompose(hand) {
 // 破坏度：出 play 后，剩余手牌的“松散牌”越多越差
 function structureScore(cards) {
   const d = decompose(cards);
-  // 松散牌（未进成型牌组的散牌）数量：越少说明成型牌组保留得越完整
-  return d.singles.length + d.pairs.length * 2;
+  // 只数孤张单牌：成型牌组（对/三条/顺子/连对/飞机/炸/火箭）是资产，不计惩罚
+  return d.singles.length;
 }
 function removeCardsArr(hand, cards) {
   const p = hand.slice();
@@ -353,19 +353,20 @@ export function chooseHint(hand, last) {
   }
 
   if (last && last.length > 0) {
-    // 跟牌：能压就亮（含要拆的）。排序键 [破坏度, 非炸优先, rank] 字典序最小。
+    // 跟牌：能压就亮。排序键 [powerTier(普通0/炸1/火箭2), splitDamage=剩余孤张数, tieRank] 字典序最小。
+    // 先按牌力档（普通牌优先于炸/火箭，避免用大牌力跟小牌），再按少拆牌，再按点数最小。
     const candidates = enumerateLegalPlays(hand, last);
     if (candidates.length === 0) return null;
-    const isBombOrRocket = (play) => {
+    const powerTier = (play) => {
       const t = identifyPlay(play).type;
-      return t === "bomb" || t === "rocket";
+      return t === "rocket" ? 2 : t === "bomb" ? 1 : 0;
     };
     let best = null;
     let bestKey = null;
     for (const play of candidates) {
       const key = [
+        powerTier(play),
         structureScore(removeCardsArr(hand, play)),
-        isBombOrRocket(play) ? 1 : 0,
         identifyPlay(play).rank,
       ];
       if (

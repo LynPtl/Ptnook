@@ -361,8 +361,8 @@ describe("斗地主 提示", () => {
     await new Promise((r) => setTimeout(r, 80));
     const hint = a.msgs.filter((m) => m.type === "ddz_hint").pop();
     expect(hint).toBeDefined();
-    // 手里能压过单张5的最小单张是 6
-    expect(hint.cards).toEqual(["6"]);
+    // 新度量：跟单5时优先不拆 66 对，出孤张 9（保留成型对） → ["9"]
+    expect(hint.cards).toEqual(["9"]);
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 
