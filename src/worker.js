@@ -500,7 +500,7 @@ function renderPage() {
       <span class="count" id="countLabel"></span>
       <button id="ddzquit" style="display:none">退出牌局</button>
       <button id="soundBtn" style="font-size:16px;padding:4px 8px" title="消息提示音开关">🔔</button>
-          <button id="leave">离开</button>
+      <button id="leave">离开</button>
     </header>
     <div id="status"></div>
     <div id="messages"></div>
@@ -665,6 +665,7 @@ function renderPage() {
   // 消息提示音
   var soundMuted = false, audioCtx = null;
   try { soundMuted = localStorage.getItem("ptnook:sound:muted") === "1"; } catch (_) {}
+  $("soundBtn").textContent = soundMuted ? "🔇" : "🔔";
   function ensureAudioCtx() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
