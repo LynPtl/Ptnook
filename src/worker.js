@@ -36,6 +36,15 @@ export class ChatRoom extends DurableObject {
       }
     }
 
+    const pk = await this.getPoker();
+    if (pk && this.pokerSeatOf(pk, nick) >= 0) {
+      try { server.send(JSON.stringify({ ...this.pokerPublicState(pk), resumed: true })); } catch {}
+      const si = this.pokerSeatOf(pk, nick);
+      if (pk.seats[si] && pk.seats[si].holeCards && pk.seats[si].holeCards.length) {
+        try { server.send(JSON.stringify({ type: "poker_hole", cards: pk.seats[si].holeCards.slice() })); } catch {}
+      }
+    }
+
     const ts = Date.now();
     this.broadcast(systemMsg(`${nick} 加入了房间`, ts));
     this.broadcast(presenceMsg(this.ctx.getWebSockets().length));
@@ -87,6 +96,7 @@ export class ChatRoom extends DurableObject {
     if (this.ctx.getWebSockets().length === 0) {
       await this.ctx.storage.delete("history");
       await this.ctx.storage.delete("ddz");
+      await this.ctx.storage.delete("holdem");
     }
   }
 
@@ -424,6 +434,7 @@ export class ChatRoom extends DurableObject {
     let g = await this.getPoker();
 
     if (msg.type === "poker_start") {
+      if (await this.getGame()) { this.pokerErr(ws, "本房间已有斗地主牌局，不能同时开德州"); return; }
       if (g) { this.pokerErr(ws, "已有德州牌局"); return; }
       g = {
         phase: "waiting", starter: nick, buttonSeat: 0, handCount: 0,
@@ -503,7 +514,20 @@ export class ChatRoom extends DurableObject {
     await this.handlePokerEnd(ws, msg, g, nick);
   }
 
-  async handlePokerEnd(ws, msg, g, nick) { /* Task 5 实现 */ }
+  async handlePokerEnd(ws, msg, g, nick) {
+    if (msg.type === "poker_disband") {
+      if (this.pokerSeatOf(g, nick) < 0) { this.pokerErr(ws, "你不在牌桌上"); return; }
+      const seatedNicks = g.seats.filter(Boolean).map((s) => s.nick);
+      await this.clearPoker();
+      this.broadcast(systemMsg(`${nick} 解散了德州牌桌`, Date.now()));
+      for (const p of seatedNicks) {
+        const pw = this.wsByNick(p);
+        if (pw) { try { pw.send(JSON.stringify({ type: "poker_state", phase: "none" })); } catch {} }
+      }
+      return;
+    }
+    this.pokerErr(ws, "未知操作");
+  }
 
 
   wsByNick(nick) {
@@ -591,6 +615,7 @@ export class ChatRoom extends DurableObject {
     let g = await this.getGame();
 
     if (msg.type === "ddz_start") {
+      if (await this.getPoker()) { this.ddzErr(ws, "本房间已有德州牌局，不能同时开斗地主"); return; }
       if (g) { this.ddzErr(ws, "已有牌局进行中"); return; }
       g = {
         phase: "waiting", players: [nick], starter: nick,

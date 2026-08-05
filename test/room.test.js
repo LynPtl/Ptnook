@@ -637,3 +637,55 @@ describe("德州扑克 手间流转", () => {
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 });
+
+describe("德州扑克 散桌/互斥/清理", () => {
+  it("散桌清空状态并回到无牌局", async () => {
+    const room = "pk-disband";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.ws.send(JSON.stringify({ type: "poker_disband" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await state.storage.get("holdem")).toBeUndefined();
+    });
+    a.ws.close(); b.ws.close();
+  });
+
+  it("已有斗地主局时发起德州被拒；反之亦然", async () => {
+    const room = "pk-mutex";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(a.msgs.some((m) => m.type === "poker_error")).toBe(true);
+    a.ws.close();
+
+    const room2 = "pk-mutex2";
+    const b = await openWSCollect(room2, "B");
+    b.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    b.msgs.length = 0;
+    b.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(b.msgs.some((m) => m.type === "ddz_error")).toBe(true);
+    b.ws.close();
+  });
+
+  it("alarm 空房清除 holdem", async () => {
+    const id = env.CHAT_ROOM.idFromName("pk-alarm");
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.put("holdem", { phase: "waiting" });
+      await instance.alarm();
+      expect(await state.storage.get("holdem")).toBeUndefined();
+    });
+  });
+});
