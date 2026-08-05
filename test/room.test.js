@@ -25,6 +25,14 @@ async function openWSCollect(room, nick) {
 }
 
 describe("ChatRoom", () => {
+  it("德州全下按钮只填入下注框，不直接发送 all-in 动作", async () => {
+    const res = await SELF.fetch("https://example.com/");
+    const html = await res.text();
+    expect(html).toContain('addBtn("全下"');
+    expect(html).toContain("input.value = fmtBB(mySeat.stack + (mySeat.streetBet || 0));");
+    expect(html).not.toContain('action: "allin"');
+  });
+
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];

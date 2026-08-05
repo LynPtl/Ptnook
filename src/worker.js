@@ -1268,7 +1268,7 @@ function renderPage() {
     var pokerQuit = $("pokerquit");
     if (state.phase === "none" || !state.phase) {
       table.style.display = "none";
-    pokerQuit.style.display = "none";
+      pokerQuit.style.display = "none";
       $("pokerboard").innerHTML = ""; $("pokerseats").innerHTML = ""; $("pokerbtns").innerHTML = ""; $("pokerpot").textContent = "";
       poker.hole = [];
       return;
@@ -1340,7 +1340,7 @@ function renderPage() {
       if (!state.currentBet) addBtn("下注", function () { pokerSend("poker_action", { action: "bet", amount: inputAmount() }); });
       else addBtn("加注到", function () { pokerSend("poker_action", { action: "raise", amount: inputAmount() }); });
       addBtn("½池", function () { var half = (state.currentBet || 0) + (state.pot || 0) / 2; input.value = fmtBB(half); });
-      addBtn("全下", function () { pokerSend("poker_action", { action: "allin" }); });
+      addBtn("全下", function () { input.value = fmtBB(mySeat.stack + (mySeat.streetBet || 0)); });
       addBtn("弃牌", function () { pokerSend("poker_action", { action: "fold" }); });
     }
     if (wasBottom) { if (window.requestAnimationFrame) requestAnimationFrame(scrollToBottom); else scrollToBottom(); }
