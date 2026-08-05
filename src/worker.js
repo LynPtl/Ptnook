@@ -330,12 +330,90 @@ export class ChatRoom extends DurableObject {
     await this.sendPokerState(g);
   }
 
-  // Task 4 实现真逻辑；Task 3 占位：本街结束即结算
   async advanceStreet(g) {
+    const BB = 1;
+    // 清本街下注
+    for (const s of g.seats) if (s) s.streetBet = 0;
+    g.currentBet = 0;
+    g.minRaise = BB;
+    const nextPhase = { preflop: "flop", flop: "turn", turn: "river", river: "showdown" }[g.phase];
+    const dealN = nextPhase === "flop" ? 3 : (nextPhase === "turn" || nextPhase === "river") ? 1 : 0;
+    for (let k = 0; k < dealN; k++) g.board.push(g.deck.shift());
+    g.phase = nextPhase;
+    if (g.phase === "showdown") { await this.showdown(g); return; }
+    const canAct = this.inHandSeats(g).filter((i) => !g.seats[i].isAllIn);
+    if (canAct.length <= 1) {
+      // all-in 摊直：继续发到河牌
+      await this.putPoker(g);
+      await this.sendPokerState(g);
+      await this.advanceStreet(g);
+      return;
+    }
+    const active = g.handSeats.filter((i) => g.seats[i] && g.seats[i].inHand);
+    const pos = derivePositions(active, g.buttonSeat);
+    g.needToAct = pos.postflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
+    g.toAct = g.needToAct.length ? g.needToAct[0] : null;
+    await this.putPoker(g);
+    await this.sendPokerState(g);
+  }
+
+  orderFromButton(g, seats) {
+    const out = [];
+    for (let step = 1; step <= 3; step++) {
+      const idx = (g.buttonSeat + step) % 3;
+      if (seats.includes(idx)) out.push(idx);
+    }
+    return out;
+  }
+
+  splitPot(g, amount, winners, winnings) {
+    const units = Math.round(amount / 0.5); // 半 bb 为最小单位
+    const base = Math.floor(units / winners.length);
+    let rem = units - base * winners.length;
+    const ordered = this.orderFromButton(g, winners); // 庄家左手第一个赢家优先拿零头
+    for (const i of ordered) {
+      let u = base;
+      if (rem > 0) { u += 1; rem -= 1; }
+      winnings[i] = (winnings[i] || 0) + u * 0.5;
+    }
+  }
+
+  async showdown(g) {
+    g.phase = "showdown";
+    const contenders = this.inHandSeats(g);
+    const evals = {};
+    for (const i of contenders) evals[i] = evaluateHand(g.seats[i].holeCards.concat(g.board));
+    const players = [0, 1, 2].filter((i) => g.seats[i]).map((i) => ({ seat: i, total: g.seats[i].totalBet, folded: !g.seats[i].inHand }));
+    const pots = buildPots(players);
+    const winnings = {};
+    const potInfos = [];
+    for (const pot of pots) {
+      const elig = pot.eligible.filter((i) => contenders.includes(i));
+      let best = [];
+      for (const i of elig) {
+        if (best.length === 0) best = [i];
+        else {
+          const c = compareHands(evals[i], evals[best[0]]);
+          if (c > 0) best = [i];
+          else if (c === 0) best.push(i);
+        }
+      }
+      this.splitPot(g, pot.amount, best, winnings);
+      potInfos.push({ amount: pot.amount, winners: best.map((i) => g.seats[i].nick) });
+    }
+    for (const key of Object.keys(winnings)) g.seats[key].stack += winnings[key];
     g.phase = "settled";
     g.toAct = null;
     g.needToAct = [];
+    g.lastResult = {
+      type: "showdown", reveal: true, pots: potInfos,
+      hands: contenders.map((i) => ({ nick: g.seats[i].nick, hole: g.seats[i].holeCards.slice() })),
+      board: g.board.slice(),
+    };
     await this.putPoker(g);
+    const summary = potInfos.map((p, k) => `${pots.length > 1 ? (k === 0 ? "主池" : "边池" + k) : "底池"} ${this.fmtBB(p.amount)}bb → ${p.winners.join("、")}`).join("；");
+    const reveal = contenders.map((i) => `${g.seats[i].nick}: ${g.seats[i].holeCards.join(" ")}`).join("｜");
+    this.broadcast(systemMsg(`摊牌 ｜ 公共牌 ${g.board.join(" ")} ｜ ${reveal} ｜ ${summary}`, Date.now()));
     await this.sendPokerState(g);
   }
 
@@ -408,7 +486,24 @@ export class ChatRoom extends DurableObject {
     await this.handlePokerMisc(ws, msg, g, nick);
   }
 
-  async handlePokerMisc(ws, msg, g, nick) { /* Task 4/5 实现 */ }
+  async handlePokerMisc(ws, msg, g, nick) {
+    const BUYIN = 50;
+    if (msg.type === "poker_buyin") {
+      const i = this.pokerSeatOf(g, nick);
+      if (i < 0) { this.pokerErr(ws, "你不在牌桌上"); return; }
+      if (g.phase !== "waiting" && g.phase !== "settled") { this.pokerErr(ws, "只能在手间补充筹码"); return; }
+      if (g.seats[i].stack > 0) { this.pokerErr(ws, "你还有筹码，无需 buy-in"); return; }
+      g.seats[i].stack = BUYIN;
+      await this.putPoker(g);
+      this.broadcast(systemMsg(`${nick} 补充了 ${BUYIN}bb 筹码`, Date.now()));
+      await this.sendPokerState(g);
+      return;
+    }
+    // Task 5：poker_disband
+    await this.handlePokerEnd(ws, msg, g, nick);
+  }
+
+  async handlePokerEnd(ws, msg, g, nick) { /* Task 5 实现 */ }
 
 
   wsByNick(nick) {

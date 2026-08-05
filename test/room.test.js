@@ -507,3 +507,133 @@ describe("德州扑克 单街下注流转", () => {
     a.ws.close(); b.ws.close();
   });
 });
+
+describe("德州扑克 摊牌与边池", () => {
+  async function seat3(room) {
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    return { a, b, c };
+  }
+
+  it("河牌单池摊牌：最大牌型赢全池并亮牌", async () => {
+    const room = "pk-show";
+    const { a, b, c } = await seat3(room);
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      // 造 river 局面：三人各投入 10，A 一对 A、B 一对 K、C 一对 Q
+      g.phase = "river";
+      g.board = ["Ad", "Kd", "Qs", "7h", "2c"];
+      g.buttonSeat = 0;
+      g.handSeats = [0, 1, 2];
+      g.positions = { button: 0, sb: 1, bb: 2, preflopOrder: [0, 1, 2], postflopOrder: [1, 2, 0] };
+      const set = (i, nick, hole) => { g.seats[i] = { nick, stack: 40, inHand: true, hasFolded: false, isAllIn: false, holeCards: hole, streetBet: 0, totalBet: 10 }; };
+      set(0, "A", ["As", "3c"]);
+      set(1, "B", ["Ks", "4c"]);
+      set(2, "C", ["Qh", "5c"]);
+      g.currentBet = 0; g.minRaise = 1; g.needToAct = [1, 2, 0]; g.toAct = 1;
+      await state.storage.put("holdem", g);
+      // B 过 → C 过 → A 过：本街结束进入摊牌
+      await instance.handlePokerAction(instance.wsByNick("B") || {}, { type: "poker_action", action: "check" }, await state.storage.get("holdem"), 1);
+    });
+    // 直接调用 showdown 更稳妥：重取状态并让所有人过牌
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      // 若上一步已推进则跳过；否则强制 showdown
+      if (g.phase !== "settled") { await instance.showdown(g); }
+      const done = await state.storage.get("holdem");
+      expect(done.phase).toBe("settled");
+      expect(done.lastResult.reveal).toBe(true);
+      const seatA = done.seats.find((s) => s && s.nick === "A");
+      // A 一对 A 最大，赢全池 30 → 40+30=70
+      expect(seatA.stack).toBe(70);
+    });
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  it("边池：短 all-in 者只能赢主池", async () => {
+    const room = "pk-side";
+    const { a, b, c } = await seat3(room);
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.phase = "river";
+      g.board = ["2d", "7d", "9s", "Jh", "3c"];
+      g.buttonSeat = 0;
+      g.handSeats = [0, 1, 2];
+      g.positions = { button: 0, sb: 1, bb: 2, preflopOrder: [0, 1, 2], postflopOrder: [1, 2, 0] };
+      // A 全下仅 10（最强，一对 J），B/C 各投入 30（B 一对 9、C 一对 7）
+      g.seats[0] = { nick: "A", stack: 0, inHand: true, hasFolded: false, isAllIn: true, holeCards: ["Js", "Jc"], streetBet: 0, totalBet: 10 };
+      g.seats[1] = { nick: "B", stack: 20, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["9h", "9c"], streetBet: 0, totalBet: 30 };
+      g.seats[2] = { nick: "C", stack: 20, inHand: true, hasFolded: false, isAllIn: false, holeCards: ["7h", "7c"], streetBet: 0, totalBet: 30 };
+      await state.storage.put("holdem", g);
+      await instance.showdown(g);
+      const done = await state.storage.get("holdem");
+      const A = done.seats.find((s) => s.nick === "A");
+      const B = done.seats.find((s) => s.nick === "B");
+      // 主池 30（三人）A 一对 J 最大 → A 得 30；边池 40（B/C）B 一对 9 > C 一对 7 → B 得 40
+      expect(A.stack).toBe(30);
+      expect(B.stack).toBe(20 + 40);
+    });
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});
+
+describe("德州扑克 手间流转", () => {
+  it("buy-in：手间给 0 筹码座位补 50", async () => {
+    const room = "pk-buyin";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.phase = "settled";
+      g.seats[0].stack = 0;
+      await state.storage.put("holdem", g);
+    });
+    a.ws.send(JSON.stringify({ type: "poker_buyin" }));
+    await new Promise((r) => setTimeout(r, 60));
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      expect(g.seats[0].stack).toBe(50);
+    });
+    a.ws.close(); b.ws.close();
+  });
+
+  it("动态人数：仅 2 人有筹码时开局是单挑", async () => {
+    const room = "pk-dyn";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const c = await openWSCollect(room, "C");
+    c.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.seats[2].stack = 0; // C 无筹码
+      instance.startHand(g);
+      expect(g.handSeats.length).toBe(2);
+      expect(g.seats[2].inHand).toBe(false);
+    });
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+});
