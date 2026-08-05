@@ -416,3 +416,94 @@ describe("斗地主 提示", () => {
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 });
+
+describe("德州扑克 发起与加入", () => {
+  it("发起后 waiting，两人加入各得 2 张底牌并进入 preflop", async () => {
+    const a = await openWSCollect("poker1", "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const b = await openWSCollect("poker1", "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "poker_next" }));
+    await new Promise((r) => setTimeout(r, 100));
+    const st = a.msgs.filter((m) => m.type === "poker_state").pop();
+    const hole = a.msgs.filter((m) => m.type === "poker_hole").pop();
+    expect(st.phase).toBe("preflop");
+    expect(hole.cards.length).toBe(2);
+    // 盲注入池：SB 0.5 + BB 1 = 1.5
+    expect(st.pot).toBe(1.5);
+    a.ws.close(); b.ws.close();
+  });
+});
+
+describe("德州扑克 单街下注流转", () => {
+  it("单挑 preflop：SB(D) 跟注、BB 过牌 → 本街结束", async () => {
+    const a = await openWSCollect("poker2", "A"); // seat0 = 按钮/SB（首手不转按钮）
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect("poker2", "B"); // seat1 = BB
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.ws.send(JSON.stringify({ type: "poker_next" }));
+    await new Promise((r) => setTimeout(r, 100));
+    // A(SB/D) 先动：跟注补到 1
+    a.ws.send(JSON.stringify({ type: "poker_action", action: "call" }));
+    await new Promise((r) => setTimeout(r, 60));
+    // B(BB) 过牌 → 本街结束（Task3 桩：进入 settled）
+    b.msgs.length = 0;
+    b.ws.send(JSON.stringify({ type: "poker_action", action: "check" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const st = b.msgs.filter((m) => m.type === "poker_state").pop();
+    expect(st.pot).toBe(2); // 两人各投入 1
+    a.ws.close(); b.ws.close();
+  });
+
+  it("非法动作与未轮到被拒", async () => {
+    const a = await openWSCollect("poker3", "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect("poker3", "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.ws.send(JSON.stringify({ type: "poker_next" }));
+    await new Promise((r) => setTimeout(r, 100));
+    // A(SB) 面对 BB 下注不能 check
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "poker_action", action: "check" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(a.msgs.some((m) => m.type === "poker_error")).toBe(true);
+    // 未轮到 B（现在轮 A）出手被拒
+    b.msgs.length = 0;
+    b.ws.send(JSON.stringify({ type: "poker_action", action: "call" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(b.msgs.some((m) => m.type === "poker_error")).toBe(true);
+    a.ws.close(); b.ws.close();
+  });
+
+  it("仅剩一人未弃：直接收池不亮牌", async () => {
+    const a = await openWSCollect("poker4", "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect("poker4", "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.ws.send(JSON.stringify({ type: "poker_next" }));
+    await new Promise((r) => setTimeout(r, 100));
+    // A(SB/D) 弃牌 → B 赢
+    a.ws.send(JSON.stringify({ type: "poker_action", action: "fold" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const id = env.CHAT_ROOM.idFromName("poker4");
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      expect(g.phase).toBe("settled");
+      expect(g.lastResult.reveal).toBe(false);
+      // B 座位赢下 SB0.5+BB1 = 1.5，回到 50-1+1.5=50.5
+      const bSeat = g.seats.find((s) => s && s.nick === "B");
+      expect(bSeat.stack).toBe(50.5);
+    });
+    a.ws.close(); b.ws.close();
+  });
+});

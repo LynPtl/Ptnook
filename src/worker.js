@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
+import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -48,6 +49,10 @@ export class ChatRoom extends DurableObject {
     try { obj = JSON.parse(message); } catch {}
     if (obj && typeof obj.type === "string" && obj.type.startsWith("ddz_")) {
       await this.handleDdz(ws, obj);
+      return;
+    }
+    if (obj && typeof obj.type === "string" && obj.type.startsWith("poker_")) {
+      await this.handlePoker(ws, obj);
       return;
     }
     const parsed = parseInbound(message);
@@ -117,6 +122,294 @@ export class ChatRoom extends DurableObject {
   async getGame() { return (await this.ctx.storage.get("ddz")) || null; }
   async putGame(g) { await this.ctx.storage.put("ddz", g); }
   async clearGame() { await this.ctx.storage.delete("ddz"); }
+
+  // ===== 德州扑克 =====
+  async getPoker() { return (await this.ctx.storage.get("holdem")) || null; }
+  async putPoker(g) { await this.ctx.storage.put("holdem", g); }
+  async clearPoker() { await this.ctx.storage.delete("holdem"); }
+
+  pokerErr(ws, text) { try { ws.send(JSON.stringify({ type: "poker_error", text })); } catch {} }
+
+  pokerSeatOf(g, nick) {
+    for (let i = 0; i < 3; i++) if (g.seats[i] && g.seats[i].nick === nick) return i;
+    return -1;
+  }
+
+  shuffledPokerDeck() {
+    const deck = makePokerDeck();
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32 * (i + 1));
+      [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    return deck;
+  }
+
+  fmtBB(n) { return Number.isInteger(n) ? String(n) : Number(n.toFixed(1)).toString(); }
+
+  pokerPos(g, i) {
+    if (!g.positions) return "";
+    if (i === g.positions.button) return "D";
+    if (i === g.positions.sb) return "SB";
+    if (i === g.positions.bb) return "BB";
+    return "";
+  }
+
+  pokerPublicState(g) {
+    const reveal = !!(g.lastResult && g.lastResult.reveal);
+    const seats = g.seats.map((s, i) => s ? {
+      seat: i, nick: s.nick, stack: s.stack, streetBet: s.streetBet,
+      inHand: s.inHand, hasFolded: s.hasFolded, isAllIn: s.isAllIn,
+      pos: this.pokerPos(g, i),
+      hole: (reveal && s.inHand) ? s.holeCards : null,
+    } : null);
+    const pot = g.seats.reduce((a, s) => a + (s ? s.totalBet : 0), 0);
+    return {
+      type: "poker_state", phase: g.phase, board: g.board || [], pot,
+      seats, toAct: g.toAct, currentBet: g.currentBet, minRaise: g.minRaise,
+      buttonSeat: g.buttonSeat, starter: g.starter, result: g.lastResult || null,
+    };
+  }
+
+  async sendPokerState(g) {
+    const payload = JSON.stringify(this.pokerPublicState(g));
+    if (g.phase === "waiting") {
+      this.broadcast(payload); // 招募阶段全房间可见【加入牌桌】
+    } else {
+      const seated = new Set(g.seats.filter(Boolean).map((s) => s.nick));
+      for (const ws of this.ctx.getWebSockets()) {
+        const att = ws.deserializeAttachment() || {};
+        if (seated.has(att.nick)) { try { ws.send(payload); } catch {} }
+      }
+    }
+  }
+
+  clearNonPokerPlayers(g) {
+    const seated = new Set(g.seats.filter(Boolean).map((s) => s.nick));
+    const payload = JSON.stringify({ type: "poker_state", phase: "none" });
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() || {};
+      if (!seated.has(att.nick)) { try { ws.send(payload); } catch {} }
+    }
+  }
+
+  sendHole(g, seatIdx) {
+    const s = g.seats[seatIdx];
+    if (!s) return;
+    const ws = this.wsByNick(s.nick);
+    if (ws) { try { ws.send(JSON.stringify({ type: "poker_hole", cards: s.holeCards.slice() })); } catch {} }
+  }
+
+  nextActiveSeat(g, fromSeat, active) {
+    for (let step = 1; step <= 3; step++) {
+      const idx = ((fromSeat < 0 ? 0 : fromSeat) + step) % 3;
+      if (active.includes(idx)) return idx;
+    }
+    return active[0];
+  }
+
+  postBlind(g, seatIdx, amt) {
+    const s = g.seats[seatIdx];
+    const put = Math.min(amt, s.stack);
+    s.stack -= put;
+    s.streetBet += put;
+    s.totalBet += put;
+    if (s.stack === 0) s.isAllIn = true;
+  }
+
+  startHand(g) {
+    const SB = 0.5, BB = 1;
+    const active = [0, 1, 2].filter((i) => g.seats[i] && g.seats[i].stack > 0);
+    if (active.length < 2) return false;
+    if (g.handCount > 0) g.buttonSeat = this.nextActiveSeat(g, g.buttonSeat, active);
+    else if (!active.includes(g.buttonSeat)) g.buttonSeat = active[0];
+    g.handCount = (g.handCount || 0) + 1;
+    // 重置每手座位字段
+    for (let i = 0; i < 3; i++) {
+      const s = g.seats[i];
+      if (!s) continue;
+      s.inHand = active.includes(i);
+      s.hasFolded = false;
+      s.isAllIn = false;
+      s.holeCards = [];
+      s.streetBet = 0;
+      s.totalBet = 0;
+    }
+    // 发底牌
+    const deck = this.shuffledPokerDeck();
+    let d = 0;
+    for (let round = 0; round < 2; round++) {
+      for (const i of active) g.seats[i].holeCards.push(deck[d++]);
+    }
+    g.deck = deck.slice(d);
+    g.board = [];
+    g.handSeats = active.slice();
+    g.positions = derivePositions(active, g.buttonSeat);
+    // 下盲
+    this.postBlind(g, g.positions.sb, SB);
+    this.postBlind(g, g.positions.bb, BB);
+    g.currentBet = Math.max(...active.map((i) => g.seats[i].streetBet));
+    g.minRaise = BB;
+    g.phase = "preflop";
+    g.needToAct = g.positions.preflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
+    g.toAct = g.needToAct.length ? g.needToAct[0] : null;
+    g.lastResult = null;
+    return true;
+  }
+
+  inHandSeats(g) { return [0, 1, 2].filter((i) => g.seats[i] && g.seats[i].inHand); }
+
+  activeToActList(g, exceptSeat) {
+    const out = [];
+    for (let i = 0; i < 3; i++) {
+      const s = g.seats[i];
+      if (s && s.inHand && !s.isAllIn && i !== exceptSeat) out.push(i);
+    }
+    return out;
+  }
+
+  nextToAct(g, fromSeat) {
+    for (let step = 1; step <= 3; step++) {
+      const idx = (fromSeat + step) % 3;
+      if (g.needToAct.includes(idx)) return idx;
+    }
+    return null;
+  }
+
+  async handlePokerAction(ws, msg, g, seatIdx) {
+    const BB = 1;
+    if (!["preflop", "flop", "turn", "river"].includes(g.phase)) { this.pokerErr(ws, "现在不能行动"); return; }
+    if (seatIdx !== g.toAct) { this.pokerErr(ws, "还没轮到你"); return; }
+    const s = g.seats[seatIdx];
+    const ctx = { currentBet: g.currentBet, minRaise: g.minRaise, bigBlind: BB, streetBet: s.streetBet, stack: s.stack };
+    const res = validateAction(ctx, msg.action, msg.amount);
+    if (!res.ok) { this.pokerErr(ws, res.error); return; }
+
+    let label;
+    if (res.folded) {
+      s.hasFolded = true;
+      s.inHand = false;
+      label = `${s.nick} 弃牌`;
+    } else {
+      s.stack -= res.added;
+      s.streetBet = res.streetBetAfter;
+      s.totalBet += res.added;
+      if (res.allIn) s.isAllIn = true;
+      if (msg.action === "check") label = `${s.nick} 过牌`;
+      else if (msg.action === "call") label = `${s.nick} 跟注到 ${this.fmtBB(s.streetBet)}bb${res.allIn ? "（全下）" : ""}`;
+      else if (msg.action === "bet") label = `${s.nick} 下注 ${this.fmtBB(s.streetBet)}bb${res.allIn ? "（全下）" : ""}`;
+      else if (msg.action === "raise") label = `${s.nick} 加注到 ${this.fmtBB(s.streetBet)}bb${res.allIn ? "（全下）" : ""}`;
+      else label = `${s.nick} 全下 ${this.fmtBB(s.streetBet)}bb`;
+    }
+
+    g.needToAct = g.needToAct.filter((x) => x !== seatIdx);
+    if (res.raised) {
+      const inc = res.streetBetAfter - g.currentBet;
+      if (inc >= g.minRaise) g.minRaise = inc;
+      g.currentBet = res.streetBetAfter;
+      g.needToAct = this.activeToActList(g, seatIdx);
+    }
+    this.broadcast(systemMsg(label, Date.now()));
+
+    const inHand = this.inHandSeats(g);
+    if (inHand.length === 1) { await this.finishHandFold(g, inHand[0]); return; }
+    if (g.needToAct.length === 0) { await this.advanceStreet(g); return; }
+    g.toAct = this.nextToAct(g, seatIdx);
+    await this.putPoker(g);
+    await this.sendPokerState(g);
+  }
+
+  async finishHandFold(g, winnerSeat) {
+    const pot = g.seats.reduce((a, s) => a + (s ? s.totalBet : 0), 0);
+    g.seats[winnerSeat].stack += pot;
+    g.phase = "settled";
+    g.toAct = null;
+    g.needToAct = [];
+    g.lastResult = { type: "fold", winners: [g.seats[winnerSeat].nick], pot, reveal: false };
+    await this.putPoker(g);
+    this.broadcast(systemMsg(`${g.seats[winnerSeat].nick} 赢得底池 ${this.fmtBB(pot)}bb（其余弃牌，不亮牌）`, Date.now()));
+    await this.sendPokerState(g);
+  }
+
+  // Task 4 实现真逻辑；Task 3 占位：本街结束即结算
+  async advanceStreet(g) {
+    g.phase = "settled";
+    g.toAct = null;
+    g.needToAct = [];
+    await this.putPoker(g);
+    await this.sendPokerState(g);
+  }
+
+  async handlePoker(ws, msg) {
+    const BUYIN = 50;
+    const att = ws.deserializeAttachment() || {};
+    const nick = att.nick || "访客";
+    let g = await this.getPoker();
+
+    if (msg.type === "poker_start") {
+      if (g) { this.pokerErr(ws, "已有德州牌局"); return; }
+      g = {
+        phase: "waiting", starter: nick, buttonSeat: 0, handCount: 0,
+        seats: [
+          { nick, stack: BUYIN, inHand: false, hasFolded: false, isAllIn: false, holeCards: [], streetBet: 0, totalBet: 0 },
+          null, null,
+        ],
+        handSeats: [], positions: null, board: [], deck: [],
+        currentBet: 0, minRaise: 1, toAct: null, needToAct: [], lastResult: null,
+      };
+      await this.putPoker(g);
+      this.broadcast(systemMsg(`${nick} 发起了德州扑克，点【加入牌桌】上桌（2~3 人），到齐点【下一手】开局`, Date.now()));
+      await this.sendPokerState(g);
+      return;
+    }
+    if (!g) { this.pokerErr(ws, "当前没有德州牌局，输入 /poker 发起"); return; }
+
+    if (msg.type === "poker_join") {
+      if (g.phase !== "waiting" && g.phase !== "settled") { this.pokerErr(ws, "本手进行中，稍后再上桌"); return; }
+      if (this.pokerSeatOf(g, nick) >= 0) { this.pokerErr(ws, "你已在牌桌上"); return; }
+      const empty = [0, 1, 2].find((i) => !g.seats[i]);
+      if (empty == null) { this.pokerErr(ws, "牌桌已满（3 人）"); return; }
+      g.seats[empty] = { nick, stack: BUYIN, inHand: false, hasFolded: false, isAllIn: false, holeCards: [], streetBet: 0, totalBet: 0 };
+      await this.putPoker(g);
+      const cnt = g.seats.filter(Boolean).length;
+      this.broadcast(systemMsg(`${nick} 加入了德州牌桌（${cnt}/3）`, Date.now()));
+      await this.sendPokerState(g);
+      return;
+    }
+
+    if (msg.type === "poker_cancel") {
+      if (g.phase !== "waiting") { this.pokerErr(ws, "牌局已开始，不能取消"); return; }
+      await this.clearPoker();
+      this.broadcast(systemMsg(`${nick} 取消了德州牌局`, Date.now()));
+      this.broadcast(JSON.stringify({ type: "poker_state", phase: "none" }));
+      return;
+    }
+
+    if (msg.type === "poker_next") {
+      if (g.phase !== "waiting" && g.phase !== "settled") { this.pokerErr(ws, "本手还在进行"); return; }
+      const active = [0, 1, 2].filter((i) => g.seats[i] && g.seats[i].stack > 0);
+      if (active.length < 2) { this.pokerErr(ws, "有筹码的玩家不足 2 人，等待 buy-in"); return; }
+      this.startHand(g);
+      await this.putPoker(g);
+      this.clearNonPokerPlayers(g);
+      this.broadcast(systemMsg(`新一手开始：按钮 ${g.seats[g.positions.button].nick}，大盲 ${g.seats[g.positions.bb].nick}。轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
+      await this.sendPokerState(g);
+      for (const i of g.handSeats) this.sendHole(g, i);
+      return;
+    }
+
+    if (msg.type === "poker_action") {
+      const i = this.pokerSeatOf(g, nick);
+      if (i < 0) { this.pokerErr(ws, "你不在牌桌上"); return; }
+      await this.handlePokerAction(ws, msg, g, i);
+      return;
+    }
+
+    // Task 4/5：poker_buyin / poker_disband
+    await this.handlePokerMisc(ws, msg, g, nick);
+  }
+
+  async handlePokerMisc(ws, msg, g, nick) { /* Task 4/5 实现 */ }
+
 
   wsByNick(nick) {
     for (const ws of this.ctx.getWebSockets()) {
