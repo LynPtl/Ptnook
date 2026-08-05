@@ -902,6 +902,8 @@ function renderPage() {
   header { padding: 12px 16px; background: #fff; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
   header .room { font-weight: 600; }
   header .count { color: #888; font-size: 13px; }
+  header .header-toggle { padding: 5px 9px; border: 1px solid #ddd; border-radius: 999px; background: #f7f7f7; color: #444; font-size: 12px; line-height: 1.2; }
+  header .header-toggle:hover { background: #eee; }
   #messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .msg { margin: 10px 0; word-break: break-word; }
   .msg .head { margin-bottom: 2px; }
@@ -946,7 +948,7 @@ function renderPage() {
       <span class="room" id="roomLabel"></span>
       <span class="count" id="countLabel"></span>
       <button id="ddzquit" style="display:none">退出牌局</button>
-      <button id="soundBtn" style="font-size:16px;padding:4px 8px" title="消息提示音开关">🔔</button>
+      <button id="soundBtn" class="header-toggle" title="点击切换提示音">提示音 开</button>
       <button id="pokerquit" style="display:none">散桌</button>
       <button id="leave">离开</button>
     </header>
@@ -1123,7 +1125,8 @@ function renderPage() {
   // 消息提示音
   var soundMuted = false, audioCtx = null;
   try { soundMuted = localStorage.getItem("ptnook:sound:muted") === "1"; } catch (_) {}
-  $("soundBtn").textContent = soundMuted ? "🔇" : "🔔";
+  function soundBtnLabel() { return soundMuted ? "提示音 关" : "提示音 开"; }
+  $("soundBtn").textContent = soundBtnLabel();
   function ensureAudioCtx() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
@@ -1131,7 +1134,7 @@ function renderPage() {
   function toggleSound() {
     soundMuted = !soundMuted;
     try { localStorage.setItem("ptnook:sound:muted", soundMuted ? "1" : ""); } catch (_) {}
-    $("soundBtn").textContent = soundMuted ? "🔇" : "🔔";
+    $("soundBtn").textContent = soundBtnLabel();
   }
   function playNotificationSound() {
     if (soundMuted) return;

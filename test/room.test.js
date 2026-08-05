@@ -33,6 +33,17 @@ describe("ChatRoom", () => {
     expect(html).not.toContain('action: "allin"');
   });
 
+  it("提示音按钮显示当前开关状态且不是蓝色主按钮", async () => {
+    const res = await SELF.fetch("https://example.com/");
+    const html = await res.text();
+    expect(html).toContain('id="soundBtn"');
+    expect(html).toContain('class="header-toggle"');
+    expect(html).toContain('title="点击切换提示音"');
+    expect(html).toContain('soundBtnLabel()');
+    expect(html).toContain('soundMuted ? "提示音 关" : "提示音 开"');
+    expect(html).not.toContain('title="消息提示音开关">🔔</button>');
+  });
+
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];
