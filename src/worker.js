@@ -27,19 +27,21 @@ export class ChatRoom extends DurableObject {
     const history = (await this.ctx.storage.get("history")) || [];
     server.send(historyMsg(history));
 
-    // 若该昵称正处于进行中的牌局，补发牌局状态与手牌
+    // 若房间有可加入的等待牌局，后来者也需要看到招募条；在座玩家额外标记 resumed 并补手牌。
     const g = await this.getGame();
-    if (g && g.players.includes(nick)) {
-      try { server.send(JSON.stringify({ ...this.publicState(g), resumed: true })); } catch {}
-      if (g.hands && g.hands[nick]) {
+    if (g && (g.players.includes(nick) || g.phase === "waiting")) {
+      const isPlayer = g.players.includes(nick);
+      try { server.send(JSON.stringify({ ...this.publicState(g), resumed: isPlayer })); } catch {}
+      if (isPlayer && g.hands && g.hands[nick]) {
         try { server.send(JSON.stringify({ type: "ddz_hand", cards: sortCards(g.hands[nick]) })); } catch {}
       }
     }
 
     const pk = await this.getPoker();
-    if (pk && this.pokerSeatOf(pk, nick) >= 0) {
-      try { server.send(JSON.stringify({ ...this.pokerPublicState(pk), resumed: true })); } catch {}
-      const si = this.pokerSeatOf(pk, nick);
+    const pokerSeat = pk ? this.pokerSeatOf(pk, nick) : -1;
+    if (pk && (pokerSeat >= 0 || pk.phase === "waiting" || pk.phase === "settled")) {
+      try { server.send(JSON.stringify({ ...this.pokerPublicState(pk), resumed: pokerSeat >= 0 })); } catch {}
+      const si = pokerSeat;
       if (pk.seats[si] && pk.seats[si].holeCards && pk.seats[si].holeCards.length) {
         try { server.send(JSON.stringify({ type: "poker_hole", cards: pk.seats[si].holeCards.slice() })); } catch {}
       }
@@ -156,6 +158,14 @@ export class ChatRoom extends DurableObject {
 
   fmtBB(n) { return Number.isInteger(n) ? String(n) : Number(n.toFixed(1)).toString(); }
 
+  pokerPot(g) { return g.seats.reduce((a, s) => a + (s ? s.totalBet : 0), 0); }
+
+  pokerBoard(g) {
+    const entries = g.seats.filter(Boolean).map((s) => [s.nick, s.stack - 50]);
+    entries.sort((a, b) => b[1] - a[1]);
+    return entries.map(([nick, delta]) => `${nick} ${delta >= 0 ? "+" : ""}${this.fmtBB(delta)}bb`).join("，");
+  }
+
   pokerPos(g, i) {
     if (!g.positions) return "";
     if (i === g.positions.button) return "D";
@@ -172,7 +182,7 @@ export class ChatRoom extends DurableObject {
       pos: this.pokerPos(g, i),
       hole: (reveal && s.inHand) ? s.holeCards : null,
     } : null);
-    const pot = g.seats.reduce((a, s) => a + (s ? s.totalBet : 0), 0);
+    const pot = this.pokerPot(g);
     return {
       type: "poker_state", phase: g.phase, board: g.board || [], pot,
       seats, toAct: g.toAct, currentBet: g.currentBet, minRaise: g.minRaise,
@@ -318,12 +328,19 @@ export class ChatRoom extends DurableObject {
       g.currentBet = res.streetBetAfter;
       g.needToAct = this.activeToActList(g, seatIdx);
     }
-    this.broadcast(systemMsg(label, Date.now()));
-
     const inHand = this.inHandSeats(g);
-    if (inHand.length === 1) { await this.finishHandFold(g, inHand[0]); return; }
-    if (g.needToAct.length === 0) { await this.advanceStreet(g); return; }
+    if (inHand.length === 1) {
+      this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
+      await this.finishHandFold(g, inHand[0]);
+      return;
+    }
+    if (g.needToAct.length === 0) {
+      this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 本轮下注结束`, Date.now()));
+      await this.advanceStreet(g);
+      return;
+    }
     g.toAct = this.nextToAct(g, seatIdx);
+    this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 当前下注 ${this.fmtBB(g.currentBet)}bb ｜ 轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
     await this.putPoker(g);
     await this.sendPokerState(g);
   }
@@ -351,6 +368,7 @@ export class ChatRoom extends DurableObject {
     for (let k = 0; k < dealN; k++) g.board.push(g.deck.shift());
     g.phase = nextPhase;
     if (g.phase === "showdown") { await this.showdown(g); return; }
+    this.broadcast(systemMsg(`${g.phase} 发牌：公共牌 ${g.board.join(" ")} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
     const canAct = this.inHandSeats(g).filter((i) => !g.seats[i].isAllIn);
     if (canAct.length <= 1) {
       // all-in 摊直：继续发到河牌
@@ -363,6 +381,7 @@ export class ChatRoom extends DurableObject {
     g.needToAct = postflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
     g.toAct = g.needToAct.length ? g.needToAct[0] : null;
     await this.putPoker(g);
+    this.broadcast(systemMsg(`轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
     await this.sendPokerState(g);
   }
 
@@ -445,7 +464,7 @@ export class ChatRoom extends DurableObject {
         currentBet: 0, minRaise: 1, toAct: null, needToAct: [], lastResult: null,
       };
       await this.putPoker(g);
-      this.broadcast(systemMsg(`${nick} 发起了德州扑克，点【加入牌桌】上桌（2~3 人），到齐点【下一手】开局`, Date.now()));
+      this.broadcast(systemMsg(`${nick} 发起了德州扑克，点【加入牌桌】上桌（2~3 人），到齐点【开始游戏】开局`, Date.now()));
       await this.sendPokerState(g);
       return;
     }
@@ -459,7 +478,7 @@ export class ChatRoom extends DurableObject {
       g.seats[empty] = { nick, stack: BUYIN, inHand: false, hasFolded: false, isAllIn: false, holeCards: [], streetBet: 0, totalBet: 0 };
       await this.putPoker(g);
       const cnt = g.seats.filter(Boolean).length;
-      this.broadcast(systemMsg(`${nick} 加入了德州牌桌（${cnt}/3）`, Date.now()));
+      this.broadcast(systemMsg(`${nick} 加入了德州牌桌（${cnt}/3）${cnt >= 2 ? "，可点【开始游戏】开局" : ""}`, Date.now()));
       await this.sendPokerState(g);
       return;
     }
@@ -517,8 +536,11 @@ export class ChatRoom extends DurableObject {
     if (msg.type === "poker_disband") {
       if (this.pokerSeatOf(g, nick) < 0) { this.pokerErr(ws, "你不在牌桌上"); return; }
       const seatedNicks = g.seats.filter(Boolean).map((s) => s.nick);
+      const board = this.pokerBoard(g);
       await this.clearPoker();
       this.broadcast(systemMsg(`${nick} 解散了德州牌桌`, Date.now()));
+      if (board) this.broadcast(systemMsg(`本桌战绩 — ${board}。牌桌已解散。`, Date.now()));
+      this.broadcast(JSON.stringify({ type: "poker_state", phase: "none" }));
       for (const p of seatedNicks) {
         const pw = this.wsByNick(p);
         if (pw) { try { pw.send(JSON.stringify({ type: "poker_state", phase: "none" })); } catch {} }
@@ -924,6 +946,7 @@ function renderPage() {
       <span class="room" id="roomLabel"></span>
       <span class="count" id="countLabel"></span>
       <button id="ddzquit" style="display:none">退出牌局</button>
+      <button id="pokerquit" style="display:none">散桌</button>
       <button id="leave">离开</button>
     </header>
     <div id="status"></div>
@@ -1039,8 +1062,8 @@ function renderPage() {
     $("join").style.display = "flex";
     $("messages").innerHTML = "";
   };
-
   $("ddzquit").onclick = function () { ddzSend("ddz_disband"); };
+  $("pokerquit").onclick = function () { pokerSend("poker_disband"); };
 
   function connect() {
     // 建立新连接前，先清掉任何遗留的连接/重连定时器
@@ -1242,8 +1265,10 @@ function renderPage() {
     poker.last = state;
     poker.phase = state.phase;
     var table = $("pokertable");
+    var pokerQuit = $("pokerquit");
     if (state.phase === "none" || !state.phase) {
       table.style.display = "none";
+    pokerQuit.style.display = "none";
       $("pokerboard").innerHTML = ""; $("pokerseats").innerHTML = ""; $("pokerbtns").innerHTML = ""; $("pokerpot").textContent = "";
       poker.hole = [];
       return;
@@ -1254,6 +1279,8 @@ function renderPage() {
     var seats = state.seats || [];
     var mySeat = null;
     seats.forEach(function (s) { if (s && s.nick === me) mySeat = s; });
+    var isSeated = !!mySeat;
+    pokerQuit.style.display = (isSeated && state.phase !== "waiting" && state.phase !== "none") ? "" : "none";
 
     // 公共牌（+ 自己底牌）
     var boardBox = $("pokerboard");
@@ -1292,16 +1319,14 @@ function renderPage() {
     var btns = $("pokerbtns");
     btns.innerHTML = "";
     function addBtn(label, fn) { var b = document.createElement("button"); b.textContent = label; b.onclick = fn; btns.appendChild(b); }
-    var isSeated = !!mySeat;
     if (state.phase === "waiting") {
       if (!isSeated) addBtn("加入牌桌", function () { pokerSend("poker_join"); });
-      if (isSeated) addBtn("下一手", function () { pokerSend("poker_next"); });
+      if (isSeated) addBtn("开始游戏", function () { pokerSend("poker_next"); });
       addBtn("取消", function () { pokerSend("poker_cancel"); });
     } else if (state.phase === "settled") {
       if (mySeat && mySeat.stack > 0) addBtn("下一手", function () { pokerSend("poker_next"); });
       if (mySeat && mySeat.stack === 0) addBtn("buy-in（+50bb）", function () { pokerSend("poker_buyin"); });
       if (!isSeated) addBtn("加入牌桌", function () { pokerSend("poker_join"); });
-      addBtn("散桌", function () { pokerSend("poker_disband"); });
     } else if (state.toAct != null && mySeat && state.toAct === mySeat.seat) {
       var toCall = (state.currentBet || 0) - (mySeat.streetBet || 0);
       if (toCall <= 0) addBtn("过牌", function () { pokerSend("poker_action", { action: "check" }); });
@@ -1318,11 +1343,6 @@ function renderPage() {
       addBtn("全下", function () { pokerSend("poker_action", { action: "allin" }); });
       addBtn("弃牌", function () { pokerSend("poker_action", { action: "fold" }); });
     }
-    // 非行动方但在座：进行中也可散桌
-    if (isSeated && (state.phase === "preflop" || state.phase === "flop" || state.phase === "turn" || state.phase === "river")) {
-      addBtn("散桌", function () { pokerSend("poker_disband"); });
-    }
-
     if (wasBottom) { if (window.requestAnimationFrame) requestAnimationFrame(scrollToBottom); else scrollToBottom(); }
   }
 

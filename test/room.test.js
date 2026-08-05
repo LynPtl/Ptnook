@@ -186,6 +186,24 @@ describe("斗地主 发起与加入", () => {
     expect(handA.cards.length).toBe(17);
     a.ws.close(); b.ws.close(); c.ws.close();
   });
+
+  it("后来进入聊天室的人能看到等待中的斗地主牌局并加入", async () => {
+    const a = await openWSCollect("ddz-late-join", "A");
+    a.ws.send(JSON.stringify({ type: "ddz_start" }));
+    await new Promise((r) => setTimeout(r, 80));
+
+    const b = await openWSCollect("ddz-late-join", "B");
+    await new Promise((r) => setTimeout(r, 120));
+    const lateState = b.msgs.filter((m) => m.type === "ddz_state").pop();
+    expect(lateState.phase).toBe("waiting");
+    expect(lateState.seats.some((s) => s.nick === "A")).toBe(true);
+
+    b.ws.send(JSON.stringify({ type: "ddz_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const joined = b.msgs.filter((m) => m.type === "ddz_state").pop();
+    expect(joined.seats.some((s) => s.nick === "B")).toBe(true);
+    a.ws.close(); b.ws.close();
+  });
 });
 
 describe("斗地主 出牌校验", () => {
@@ -436,6 +454,24 @@ describe("德州扑克 发起与加入", () => {
     expect(st.pot).toBe(1.5);
     a.ws.close(); b.ws.close();
   });
+
+  it("后来进入聊天室的人能看到等待中的德州牌局并加入", async () => {
+    const a = await openWSCollect("poker-late-join", "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 80));
+
+    const b = await openWSCollect("poker-late-join", "B");
+    await new Promise((r) => setTimeout(r, 120));
+    const lateState = b.msgs.filter((m) => m.type === "poker_state").pop();
+    expect(lateState.phase).toBe("waiting");
+    expect(lateState.seats.some((s) => s && s.nick === "A")).toBe(true);
+
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const joined = b.msgs.filter((m) => m.type === "poker_state").pop();
+    expect(joined.seats.some((s) => s && s.nick === "B")).toBe(true);
+    a.ws.close(); b.ws.close();
+  });
 });
 
 describe("德州扑克 单街下注流转", () => {
@@ -457,6 +493,26 @@ describe("德州扑克 单街下注流转", () => {
     await new Promise((r) => setTimeout(r, 80));
     const st = b.msgs.filter((m) => m.type === "poker_state").pop();
     expect(st.pot).toBe(2); // 两人各投入 1
+    a.ws.close(); b.ws.close();
+  });
+
+  it("行动广播包含下一位操作者，便于只看广播复盘", async () => {
+    const a = await openWSCollect("poker-action-broadcast", "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect("poker-action-broadcast", "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    a.ws.send(JSON.stringify({ type: "poker_next" }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    b.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "poker_action", action: "call" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const text = b.msgs.filter((m) => m.type === "system").map((m) => m.text).join("\n");
+    expect(text).toContain("A 跟注到 1bb");
+    expect(text).toContain("轮到 B 行动");
+    expect(text).toContain("底池 2bb");
     a.ws.close(); b.ws.close();
   });
 
@@ -720,6 +776,33 @@ describe("德州扑克 散桌/互斥/清理", () => {
     await runInDurableObject(stub, async (instance, state) => {
       expect(await state.storage.get("holdem")).toBeUndefined();
     });
+    a.ws.close(); b.ws.close();
+  });
+
+  it("散桌时广播本桌筹码排名", async () => {
+    const room = "pk-disband-board";
+    const a = await openWSCollect(room, "A");
+    a.ws.send(JSON.stringify({ type: "poker_start" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const b = await openWSCollect(room, "B");
+    b.ws.send(JSON.stringify({ type: "poker_join" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const id = env.CHAT_ROOM.idFromName(room);
+    const stub = env.CHAT_ROOM.get(id);
+    await runInDurableObject(stub, async (instance, state) => {
+      const g = await state.storage.get("holdem");
+      g.seats[0].stack = 62.5;
+      g.seats[1].stack = 37.5;
+      await state.storage.put("holdem", g);
+    });
+
+    a.msgs.length = 0;
+    a.ws.send(JSON.stringify({ type: "poker_disband" }));
+    await new Promise((r) => setTimeout(r, 80));
+    const text = a.msgs.filter((m) => m.type === "system").map((m) => m.text).join("\n");
+    expect(text).toContain("本桌战绩");
+    expect(text).toContain("A +12.5bb");
+    expect(text).toContain("B -12.5bb");
     a.ws.close(); b.ws.close();
   });
 
