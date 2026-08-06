@@ -40,7 +40,10 @@ describe("ChatRoom", () => {
     expect(html).toContain('class="header-toggle"');
     expect(html).toContain('title="点击切换提示音"');
     expect(html).toContain('soundBtnLabel()');
-    expect(html).toContain('soundMuted ? "提示音 关" : "提示音 开"');
+    expect(html).toContain('ptnook:sound:mode');
+    expect(html).toContain('提示音 聊天');
+    expect(html).toContain('提示音 全部');
+    expect(html).toContain('提示音 关');
     expect(html).not.toContain('title="消息提示音开关">🔔</button>');
   });
 

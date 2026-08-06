@@ -207,11 +207,11 @@ export function renderPage() {
       if (m.type === "chat") {
         addChat(m.nick, m.text, m.ts);
         // 新消息响铃：非自己发的、且（不在前台或不在底部）
-        if (m.nick !== nick && (document.hidden || !atBottom())) {
+        if (shouldPlaySound("chat", m.nick === nick)) {
           playNotificationSound();
         }
       }
-      else if (m.type === "system") addSystem(m.text);
+      else if (m.type === "system") { addSystem(m.text); if (shouldPlaySound("system", false)) playNotificationSound(); }
       else if (m.type === "presence") $("countLabel").textContent = "在线 " + m.count + " 人";
       else if (m.type === "history") {
         $("messages").innerHTML = "";
@@ -245,21 +245,31 @@ export function renderPage() {
   var ddz = { phase: "none", hand: [], selected: {} };
 
   // 消息提示音
-  var soundMuted = false, audioCtx = null;
-  try { soundMuted = localStorage.getItem("ptnook:sound:muted") === "1"; } catch (_) {}
-  function soundBtnLabel() { return soundMuted ? "提示音 关" : "提示音 开"; }
+  var soundMode = "chat", audioCtx = null;
+  try {
+    var savedMode = localStorage.getItem("ptnook:sound:mode");
+    if (savedMode === "chat" || savedMode === "all" || savedMode === "off") soundMode = savedMode;
+    else if (localStorage.getItem("ptnook:sound:muted") === "1") soundMode = "off";
+  } catch (_) {}
+  function soundBtnLabel() { return soundMode === "off" ? "提示音 关" : soundMode === "all" ? "提示音 全部" : "提示音 聊天"; }
   $("soundBtn").textContent = soundBtnLabel();
   function ensureAudioCtx() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
   }
   function toggleSound() {
-    soundMuted = !soundMuted;
-    try { localStorage.setItem("ptnook:sound:muted", soundMuted ? "1" : ""); } catch (_) {}
+    soundMode = soundMode === "chat" ? "all" : soundMode === "all" ? "off" : "chat";
+    try { localStorage.setItem("ptnook:sound:mode", soundMode); localStorage.setItem("ptnook:sound:muted", soundMode === "off" ? "1" : ""); } catch (_) {}
     $("soundBtn").textContent = soundBtnLabel();
   }
+  function shouldPlaySound(type, isMine) {
+    if (!(document.hidden || !atBottom())) return false;
+    if (soundMode === "off") return false;
+    if (type === "chat") return !isMine;
+    return soundMode === "all" && type === "system";
+  }
   function playNotificationSound() {
-    if (soundMuted) return;
+    if (soundMode === "off") return;
     try {
       ensureAudioCtx();
       var osc = audioCtx.createOscillator();
