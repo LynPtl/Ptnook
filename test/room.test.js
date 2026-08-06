@@ -44,6 +44,16 @@ describe("ChatRoom", () => {
     expect(html).not.toContain('title="消息提示音开关">🔔</button>');
   });
 
+  it("header 使用分组布局，德州牌桌显示当前行动行", async () => {
+    const res = await SELF.fetch("https://example.com/");
+    const html = await res.text();
+    expect(html).toContain('class="header-left"');
+    expect(html).toContain('class="header-center"');
+    expect(html).toContain('class="header-actions"');
+    expect(html).toContain('id="pokerturn"');
+    expect(html).toContain('$("pokerturn").textContent =');
+  });
+
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];

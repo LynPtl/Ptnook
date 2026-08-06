@@ -14,7 +14,10 @@ export function renderPage() {
   button { padding: 10px 16px; border: 0; border-radius: 8px; background: #2f6feb; color: #fff; font-size: 15px; cursor: pointer; }
   button:hover { background: #2559c9; }
   #chat { display: none; flex-direction: column; height: 100%; }
-  header { padding: 12px 16px; background: #fff; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+  header { padding: 12px 16px; background: #fff; border-bottom: 1px solid #eee; display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+  header .header-left { min-width: 0; }
+  header .header-center { justify-self: center; }
+  header .header-actions { justify-self: end; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   header .room { font-weight: 600; }
   header .count { color: #888; font-size: 13px; }
   header .header-toggle { padding: 5px 9px; border: 1px solid #ddd; border-radius: 999px; background: #f7f7f7; color: #444; font-size: 12px; line-height: 1.2; }
@@ -37,7 +40,8 @@ export function renderPage() {
   #pokertable .board { min-height: 26px; margin-bottom: 6px; font-size: 13px; }
   #pokertable .card { display: inline-block; background: #fff; color: #111; border-radius: 4px; padding: 2px 6px; margin-right: 4px; font-weight: 600; }
   #pokertable .card.red { color: #d11; }
-  #pokertable .pot { font-size: 13px; margin-bottom: 6px; }
+  #pokertable .pot, #pokertable .turn { font-size: 13px; margin-bottom: 6px; }
+  #pokertable .turn { color: #ffe08a; font-weight: 600; min-height: 18px; }
   #pokertable .seats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
   #pokertable .seat { background: rgba(255,255,255,.12); border-radius: 6px; padding: 4px 8px; font-size: 13px; }
   #pokertable .seat.act { outline: 2px solid #ffd43b; }
@@ -60,12 +64,14 @@ export function renderPage() {
   </div>
   <div id="chat">
     <header>
-      <span class="room" id="roomLabel"></span>
-      <span class="count" id="countLabel"></span>
-      <button id="ddzquit" style="display:none">退出牌局</button>
-      <button id="soundBtn" class="header-toggle" title="点击切换提示音">提示音 开</button>
-      <button id="pokerquit" style="display:none">散桌</button>
-      <button id="leave">离开</button>
+      <div class="header-left"><span class="room" id="roomLabel"></span></div>
+      <div class="header-center"><span class="count" id="countLabel"></span></div>
+      <div class="header-actions">
+        <button id="ddzquit" style="display:none">退出牌局</button>
+        <button id="soundBtn" class="header-toggle" title="点击切换提示音">提示音 开</button>
+        <button id="pokerquit" style="display:none">散桌</button>
+        <button id="leave">离开</button>
+      </div>
     </header>
     <div id="status"></div>
     <div id="messages"></div>
@@ -76,6 +82,7 @@ export function renderPage() {
     <div id="pokertable">
       <div class="board" id="pokerboard"></div>
       <div class="pot" id="pokerpot"></div>
+      <div class="turn" id="pokerturn"></div>
       <div class="seats" id="pokerseats"></div>
       <div id="pokerbtns"></div>
     </div>
@@ -427,7 +434,7 @@ export function renderPage() {
     if (state.phase === "none" || !state.phase) {
       table.style.display = "none";
       pokerQuit.style.display = "none";
-      $("pokerboard").innerHTML = ""; $("pokerseats").innerHTML = ""; $("pokerbtns").innerHTML = ""; $("pokerpot").textContent = "";
+      $("pokerboard").innerHTML = ""; $("pokerseats").innerHTML = ""; $("pokerbtns").innerHTML = ""; $("pokerpot").textContent = ""; $("pokerturn").textContent = "";
       poker.hole = [];
       return;
     }
@@ -452,6 +459,8 @@ export function renderPage() {
 
     // 底池
     $("pokerpot").textContent = "底池 " + fmtBB(state.pot) + "bb" + (state.currentBet ? "（当前下注 " + fmtBB(state.currentBet) + "bb）" : "");
+    var turnSeat = (state.seats || []).filter(function (s) { return s && s.seat === state.toAct; })[0];
+    $("pokerturn").textContent = turnSeat ? "当前行动：" + turnSeat.nick : "";
 
     // 座位
     var seatsBox = $("pokerseats");
