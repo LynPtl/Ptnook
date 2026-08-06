@@ -13,11 +13,16 @@
 
     npm test
 
+部署前建议跑完整校验：
+
+    npm run verify
+
 ## 部署（免费）
 
 1. 安装并登录：`npx wrangler login`
-2. 一键部署：`npm run deploy`
-3. 部署完成后得到 `https://chatroom.<你的子域>.workers.dev`，把地址发给朋友即可。
+2. 部署前校验：`npm run verify`
+3. 一键部署：`npm run deploy`
+4. 部署完成后得到 `https://chatroom.<你的子域>.workers.dev`，把地址发给朋友即可。
 
 Workers 与 Durable Objects 的免费额度足够自己人小范围使用。
 
