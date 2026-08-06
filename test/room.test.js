@@ -529,6 +529,7 @@ describe("德州扑克 单街下注流转", () => {
     a.ws.send(JSON.stringify({ type: "poker_action", action: "call" }));
     await new Promise((r) => setTimeout(r, 80));
     const text = b.msgs.filter((m) => m.type === "system").map((m) => m.text).join("\n");
+    expect(text).toContain("手牌#1");
     expect(text).toContain("A 跟注到 1bb");
     expect(text).toContain("轮到 B 行动");
     expect(text).toContain("底池 2bb");

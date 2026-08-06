@@ -167,6 +167,10 @@ export class ChatRoom extends DurableObject {
     return entries.map(([nick, delta]) => `${nick} ${delta >= 0 ? "+" : ""}${this.fmtBB(delta)}bb`).join("，");
   }
 
+  pokerHandLabel(g) {
+    return g.handCount ? `手牌#${g.handCount}` : "德州扑克";
+  }
+
   pokerPos(g, i) {
     if (!g.positions) return "";
     if (i === g.positions.button) return "D";
@@ -331,17 +335,17 @@ export class ChatRoom extends DurableObject {
     }
     const inHand = this.inHandSeats(g);
     if (inHand.length === 1) {
-      this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
+      this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ ${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
       await this.finishHandFold(g, inHand[0]);
       return;
     }
     if (g.needToAct.length === 0) {
-      this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 本轮下注结束`, Date.now()));
+      this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ ${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 本轮下注结束`, Date.now()));
       await this.advanceStreet(g);
       return;
     }
     g.toAct = this.nextToAct(g, seatIdx);
-    this.broadcast(systemMsg(`${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 当前下注 ${this.fmtBB(g.currentBet)}bb ｜ 轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
+    this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ ${label} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb ｜ 当前下注 ${this.fmtBB(g.currentBet)}bb ｜ 轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
     await this.putPoker(g);
     await this.sendPokerState(g);
   }
@@ -354,7 +358,7 @@ export class ChatRoom extends DurableObject {
     g.needToAct = [];
     g.lastResult = { type: "fold", winners: [g.seats[winnerSeat].nick], pot, reveal: false };
     await this.putPoker(g);
-    this.broadcast(systemMsg(`${g.seats[winnerSeat].nick} 赢得底池 ${this.fmtBB(pot)}bb（其余弃牌，不亮牌）`, Date.now()));
+    this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ ${g.seats[winnerSeat].nick} 赢得底池 ${this.fmtBB(pot)}bb（其余弃牌，不亮牌）`, Date.now()));
     await this.sendPokerState(g);
   }
 
@@ -369,7 +373,7 @@ export class ChatRoom extends DurableObject {
     for (let k = 0; k < dealN; k++) g.board.push(g.deck.shift());
     g.phase = nextPhase;
     if (g.phase === "showdown") { await this.showdown(g); return; }
-    this.broadcast(systemMsg(`${g.phase} 发牌：公共牌 ${g.board.join(" ")} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
+    this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ ${g.phase} 发牌：公共牌 ${g.board.join(" ")} ｜ 底池 ${this.fmtBB(this.pokerPot(g))}bb`, Date.now()));
     const canAct = this.inHandSeats(g).filter((i) => !g.seats[i].isAllIn);
     if (canAct.length <= 1) {
       // all-in 摊直：继续发到河牌
@@ -382,7 +386,7 @@ export class ChatRoom extends DurableObject {
     g.needToAct = postflopOrder.filter((i) => g.seats[i].inHand && !g.seats[i].isAllIn);
     g.toAct = g.needToAct.length ? g.needToAct[0] : null;
     await this.putPoker(g);
-    this.broadcast(systemMsg(`轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
+    this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ 轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
     await this.sendPokerState(g);
   }
 
@@ -442,7 +446,7 @@ export class ChatRoom extends DurableObject {
     await this.putPoker(g);
     const summary = potInfos.map((p, k) => `${pots.length > 1 ? (k === 0 ? "主池" : "边池" + k) : "底池"} ${this.fmtBB(p.amount)}bb → ${p.winners.join("、")}`).join("；");
     const reveal = contenders.map((i) => `${g.seats[i].nick}: ${g.seats[i].holeCards.join(" ")}`).join("｜");
-    this.broadcast(systemMsg(`摊牌 ｜ 公共牌 ${g.board.join(" ")} ｜ ${reveal} ｜ ${summary}`, Date.now()));
+    this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ 摊牌 ｜ 公共牌 ${g.board.join(" ")} ｜ ${reveal} ｜ ${summary}`, Date.now()));
     await this.sendPokerState(g);
   }
 
@@ -499,7 +503,7 @@ export class ChatRoom extends DurableObject {
       this.startHand(g);
       await this.putPoker(g);
       this.clearNonPokerPlayers(g);
-      this.broadcast(systemMsg(`新一手开始：按钮 ${g.seats[g.positions.button].nick}，大盲 ${g.seats[g.positions.bb].nick}。轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
+      this.broadcast(systemMsg(`${this.pokerHandLabel(g)} ｜ 新一手开始：按钮 ${g.seats[g.positions.button].nick}，大盲 ${g.seats[g.positions.bb].nick}。轮到 ${g.seats[g.toAct].nick} 行动`, Date.now()));
       await this.sendPokerState(g);
       for (const i of g.handSeats) this.sendHole(g, i);
       return;
