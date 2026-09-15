@@ -3,6 +3,10 @@ import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
 import { renderPage } from "./page.js";
+import { handleTrpg } from "./trpg-api.js";
+import { renderTrpgPage } from "./trpg-page.js";
+export { TrpgIdentity, TrpgQuota } from "./trpg-identity.js";
+export { TrpgCampaign } from "./trpg-campaign.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -130,6 +134,35 @@ export class ChatRoom extends DurableObject {
     if (!entries.some(([, v]) => v !== 0)) return null;
     entries.sort((x, y) => y[1] - x[1]);
     return entries.map(([p, v]) => `${p} ${v >= 0 ? "+" : ""}${v}`).join("，");
+  }
+
+  async activeTrpg() {
+    const lock = await this.ctx.storage.get("trpg-lock");
+    if (!lock || lock.until <= Date.now()) return null;
+    return lock.id;
+  }
+
+  async claimTrpg(id) {
+    await this.ctx.storage.transaction(async txn => {
+      const values = await txn.get(["ddz", "holdem", "trpg-lock"]);
+      const lock = values.get("trpg-lock");
+      if (values.get("ddz") || values.get("holdem") || lock && lock.until > Date.now() && lock.id !== id) throw new Error("[TRPG:409]本房间已有游戏，请先结束或暂停");
+      await txn.put("trpg-lock", { id, until: Date.now() + 120000 });
+    });
+  }
+
+  async renewTrpg(id) {
+    await this.ctx.storage.transaction(async txn => {
+      const lock = await txn.get("trpg-lock");
+      if (lock?.id === id && lock.until > Date.now()) await txn.put("trpg-lock", { id, until: Date.now() + 120000 });
+    });
+  }
+
+  async releaseTrpg(id) {
+    await this.ctx.storage.transaction(async txn => {
+      const lock = await txn.get("trpg-lock");
+      if (lock?.id === id) await txn.delete("trpg-lock");
+    });
   }
 
   async getGame() { return (await this.ctx.storage.get("ddz")) || null; }
@@ -457,6 +490,7 @@ export class ChatRoom extends DurableObject {
     let g = await this.getPoker();
 
     if (msg.type === "poker_start") {
+      if (await this.activeTrpg()) { this.pokerErr(ws, "本房间正在跑团，请先暂停战役"); return; }
       if (await this.getGame()) { this.pokerErr(ws, "本房间已有斗地主牌局，不能同时开德州"); return; }
       if (g) { this.pokerErr(ws, "已有德州牌局"); return; }
       g = {
@@ -641,6 +675,7 @@ export class ChatRoom extends DurableObject {
     let g = await this.getGame();
 
     if (msg.type === "ddz_start") {
+      if (await this.activeTrpg()) { this.ddzErr(ws, "本房间正在跑团，请先暂停战役"); return; }
       if (await this.getPoker()) { this.ddzErr(ws, "本房间已有德州牌局，不能同时开斗地主"); return; }
       if (g) { this.ddzErr(ws, "已有牌局进行中"); return; }
       g = {
@@ -871,6 +906,8 @@ export class ChatRoom extends DurableObject {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/trpg")) return handleTrpg(request, env);
+    if (url.pathname === "/trpg") return new Response(renderTrpgPage(), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" } });
     const match = url.pathname.match(/^\/room\/([^/]+)$/);
 
     if (match) {

@@ -2,6 +2,9 @@ name = "chatroom"
 main = "src/worker.js"
 compatibility_date = "2026-04-21"
 
+[assets]
+directory = "./public"
+
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
 class_name = "ChatRoom"
@@ -9,3 +12,19 @@ class_name = "ChatRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ChatRoom"]
+
+[[durable_objects.bindings]]
+name = "TRPG_IDENTITY"
+class_name = "TrpgIdentity"
+
+[[durable_objects.bindings]]
+name = "TRPG_CAMPAIGN"
+class_name = "TrpgCampaign"
+
+[[durable_objects.bindings]]
+name = "TRPG_QUOTA"
+class_name = "TrpgQuota"
+
+[[migrations]]
+tag = "v2-trpg"
+new_sqlite_classes = ["TrpgIdentity", "TrpgCampaign", "TrpgQuota"]

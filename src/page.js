@@ -67,6 +67,7 @@ export function renderPage() {
       <div class="header-left"><span class="room" id="roomLabel"></span></div>
       <div class="header-center"><span class="count" id="countLabel"></span></div>
       <div class="header-actions">
+        <button id="trpgOpen" class="header-toggle">跑团</button>
         <button id="ddzquit" style="display:none">退出牌局</button>
         <button id="soundBtn" class="header-toggle" title="点击切换提示音">提示音 开</button>
         <button id="pokerquit" style="display:none">散桌</button>
@@ -189,6 +190,7 @@ export function renderPage() {
   };
 
   $("soundBtn").onclick = toggleSound;
+  $("trpgOpen").onclick = function () { window.open("/trpg?room=" + encodeURIComponent(room || ""), "_blank", "noopener"); };
 
   $("ddzquit").onclick = function () { ddzSend("ddz_disband"); };
   $("pokerquit").onclick = function () { pokerSend("poker_disband"); };
@@ -556,6 +558,11 @@ export function renderPage() {
   function sendMessage() {
     var t = $("text").value.trim();
     if (!t || !ws || ws.readyState !== 1) return;
+    if (t === "/trpg") {
+      $("trpgOpen").click();
+      $("text").value = "";
+      return;
+    }
     if (t === "/ddz") {
       ws.send(JSON.stringify({ type: "ddz_start" }));
       $("text").value = "";
