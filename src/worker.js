@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
+import { renderMd } from "./markdown.js";
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -970,6 +971,10 @@ function renderPage() {
     </form>
   </div>
 <script>
+// 最小内联 Markdown 渲染器（来自 src/markdown.js）。
+// 用 toString() 注入，避免手抄一份造成两份实现漂移；renderMd 本身是自包含单函数，
+// 不依赖模块内其它标识符，故可独立求值（test/markdown.test.js 已固化该约束）。
+var renderMd = ${renderMd.toString()};
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false, lastHintAt = 0;
   var $ = function (id) { return document.getElementById(id); };
@@ -1405,7 +1410,10 @@ function renderPage() {
     head.appendChild(s); head.appendChild(tm);
     var b = document.createElement("div");
     b.className = "body";
-    b.textContent = t;
+    // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先整体转义再仅对
+    // 白名单标记（strong/em/code/del/a）套标签，输出结构恒定，故此处 innerHTML 安全。
+    // 其余所有位置（昵称、系统消息、牌面等）一律保持 textContent，勿改。
+    b.innerHTML = renderMd(t);
     div.appendChild(head); div.appendChild(b);
     $("messages").appendChild(div);
     if (wasBottom) scrollToBottom();
