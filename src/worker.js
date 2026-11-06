@@ -2,7 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
-import { renderMd } from "./markdown.js";
+// 注意：不再 import renderMd。前端经 /markdown.js 的 ES module import 引入，
+// 服务端无需持有它（public/markdown.js 是唯一源）。
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -970,11 +971,14 @@ function renderPage() {
       <button type="submit">发送</button>
     </form>
   </div>
-<script>
-// 最小内联 Markdown 渲染器（来自 src/markdown.js）。
-// 用 toString() 注入，避免手抄一份造成两份实现漂移；renderMd 本身是自包含单函数，
-// 不依赖模块内其它标识符，故可独立求值（test/markdown.test.js 已固化该约束）。
-var renderMd = ${renderMd.toString()};
+<script type="module">
+// 最小 Markdown 渲染器以静态资源 /markdown.js 提供（public/markdown.js，单一源），
+// 前端以 ES module import 引入。
+// 早期版本用 renderMd.toString() 内联注入，导致函数体内不得出现任何嵌套函数
+// （esbuild keepNames 会插入 __name(...)，在内联脚本中 ReferenceError），
+// 块级解析无法实现；迁移到 [assets] + module import 后该约束已解除。
+// 注意：module 脚本天然 defer，import 完成后才执行，此时 DOM 已就绪。
+import { renderMd } from "/markdown.js";
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false, lastHintAt = 0;
   var $ = function (id) { return document.getElementById(id); };
@@ -1410,9 +1414,10 @@ var renderMd = ${renderMd.toString()};
     head.appendChild(s); head.appendChild(tm);
     var b = document.createElement("div");
     b.className = "body";
-    // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先整体转义再仅对
-    // 白名单标记（strong/em/code/del/a）套标签，输出结构恒定，故此处 innerHTML 安全。
-    // 其余所有位置（昵称、系统消息、牌面等）一律保持 textContent，勿改。
+    // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先按行识别块级结构
+    // （h1-h6/ul/ol/li/pre/blockquote/hr/p），行内容再整体转义后仅对白名单标记
+    // （strong/em/code/del/a）套标签，标签均由常量拼接、无属性入口，
+    // 故此处 innerHTML 安全。其余位置（昵称、系统消息、牌面等）保持 textContent，勿改。
     b.innerHTML = renderMd(t);
     div.appendChild(head); div.appendChild(b);
     $("messages").appendChild(div);

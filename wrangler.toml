@@ -2,6 +2,15 @@ name = "chatroom"
 main = "src/worker.js"
 compatibility_date = "2026-04-21"
 
+# 静态资源：public/markdown.js 是 Markdown 渲染器的唯一源，
+# 前端以 <script type="module">import { renderMd } from "/markdown.js" 引入。
+# 实测（wrangler 4.116）：/ 仍走 Worker（assets 未命中回落），
+# /markdown.js 返回 text/javascript，Cache-Control 默认 max-age=0, must-revalidate，
+# 升级后无需额外缓存失效配置。
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
 class_name = "ChatRoom"
