@@ -912,6 +912,42 @@ function renderPage() {
   .msg .nick { font-weight: 600; margin-right: 6px; }
   .msg .time { color: #bbb; font-size: 12px; margin-right: 6px; }
   .msg .body { white-space: pre-wrap; }
+  /* Markdown 渲染元素的样式。
+     renderMd 输出的标签集合为 h1-h6/p/ul/ol/li/blockquote/pre/code/hr/strong/em/del/a，
+     必须与之一一对应，否则渲染正确但视觉不可辨（例如中文删除线几乎看不出）。 */
+  .msg .body > :first-child { margin-top: 0; }
+  .msg .body > :last-child { margin-bottom: 0; }
+  .msg .body h1, .msg .body h2, .msg .body h3,
+  .msg .body h4, .msg .body h5, .msg .body h6 {
+    margin: 8px 0 4px; line-height: 1.3; font-weight: 700;
+  }
+  .msg .body h1 { font-size: 20px; }
+  .msg .body h2 { font-size: 18px; }
+  .msg .body h3 { font-size: 16px; }
+  .msg .body h4, .msg .body h5, .msg .body h6 { font-size: 15px; }
+  .msg .body p { margin: 4px 0; }
+  .msg .body ul, .msg .body ol { margin: 4px 0; padding-left: 22px; }
+  .msg .body li { margin: 2px 0; }
+  .msg .body blockquote {
+    margin: 6px 0; padding: 2px 0 2px 10px;
+    border-left: 3px solid #d0d0d0; color: #555;
+  }
+  .msg .body code {
+    background: #e0e0e0; border-radius: 4px; padding: 1px 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  .msg .body pre {
+    background: #e0e0e0; border: 1px solid #d0d0d0; border-radius: 6px;
+    padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre;
+  }
+  .msg .body pre code { background: none; padding: 0; font-size: 13px; }
+  .msg .body del { text-decoration: line-through; color: #888; }
+  /* 删除线内的链接视为已废弃：保留视觉但不可点击。
+     分隔符均无标签，故 del 内只可能是 renderMd 生成的 <a>。 */
+  .msg .body del a { pointer-events: none; cursor: default; }
+  .msg .body hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
+  .msg .body a { color: #2f6feb; text-decoration: underline; word-break: break-all; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
   .divider { color: #e0533d; font-size: 12px; text-align: center; margin: 12px 0; border-top: 1px solid #f0c9c2; padding-top: 6px; }
   #ddzbar { border-top: 1px solid #eee; background: #fff; padding: 8px 12px; display: none; }

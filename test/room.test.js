@@ -44,6 +44,28 @@ describe("ChatRoom", () => {
     expect(html).not.toContain('title="消息提示音开关">🔔</button>');
   });
 
+  it("Markdown 块级与行内元素有可辨识样式", async () => {
+    // 渲染器输出 h1-h6/ul/ol/blockquote/pre/code/del/hr，
+    // 页面必须为其提供样式，否则中文环境下删除线、代码块等视觉不可辨。
+    const res = await SELF.fetch("https://example.com/");
+    const html = await res.text();
+    // 删除线：必须显式声明，不能依赖浏览器默认
+    expect(html).toMatch(/\.msg \.body del\s*\{[^}]*text-decoration\s*:\s*line-through/);
+    // 代码块：等宽 + 背景
+    expect(html).toMatch(/\.msg \.body pre\s*\{/);
+    expect(html).toMatch(/\.msg \.body pre\s+code\s*\{/);
+    // 引用：左侧竖线
+    expect(html).toMatch(/\.msg \.body blockquote\s*\{[^}]*border-left/);
+    // 标题：不继承 body 的默认字号（避免 h1 过大撞版面）
+    expect(html).toMatch(/\.msg \.body h1\s*\{/);
+    // 列表：保留缩进
+    expect(html).toMatch(/\.msg \.body ul[^{]*\{[^}]*padding-left/);
+    // 分割线处于 .body 内部
+    expect(html).toMatch(/\.msg \.body hr\s*\{/);
+    // 删除线内的链接不可点击（视觉保留，避免废弃地址被误点）
+    expect(html).toMatch(/\.msg \.body del a\s*\{[^}]*pointer-events\s*:\s*none/);
+  });
+
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];
