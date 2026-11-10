@@ -160,7 +160,7 @@ b.innerHTML = renderMd(t);
 ### 引入方式：`[assets]` + ES module（2026-11-06 第二期改定）
 
 渲染器唯一源为 `public/markdown.js`，经 `wrangler.toml` 的 `[assets]` 以静态资源提供，
-前端用 `<script type="module">import { renderMd } from "/markdown.js"` 引入。
+前端用**动态 import**（`await import("/markdown.js")`，包在 `try/catch` 里）引入。
 
 **为何不再用 `renderMd.toString()` 注入**（早期方案，已废弃）：
 `toString()` 注入要求函数体内不得出现任何嵌套函数，因为 wrangler 的 esbuild（keepNames）
@@ -176,10 +176,21 @@ b.innerHTML = renderMd(t);
 - `/room/:name` 仍走 Durable Object，非 WebSocket 请求返回 426。
 - 静态资源不经 esbuild 处理，原样返回（不会出现 `__name` 等注入）。
 
+**为何必须是动态 import（评审后加固）**：
+asset 未命中时请求会**回落到 Worker**，而 Worker 对任意非 `/room/*` 路径都返回
+聊天页 HTML。实测 `GET /nope.js` → `200 text/html`。若用静态
+`import { renderMd } from "/markdown.js"`，一旦 asset 缺失（未上传、被拦截、
+路由改动），浏览器报 MIME 错误，**整个 module 体不执行**——它是页面唯一的脚本，
+登录框与 WebSocket 随之全部失效，且用户看不到任何提示。
+现改为 `try { ({ renderMd } = await import("/markdown.js")) } catch {}`：
+失败时 `renderMd` 保持 `null`，`addChat` 退化为 `textContent = t`，
+聊天核心功能不再依赖静态资源。由 `test/room.test.js` 三条断言锁定。
+`[assets]` 不声明 `binding`：asset 命中时请求不进入 Worker，`env.ASSETS` 无用途。
+
 ## 四、与现有行为的兼容
 
 - **多行输入**：`.body` 已有 `white-space: pre-wrap`，`innerHTML` 不与之冲突，换行照常保留。
-  所有正则均带 `[^\n]`，跨行不会被误匹配（行内代码不跨行）。
+  块级标记按行识别（故强调可跨软换行，见第六节）；行内代码与删除线限单行（`[^\n]`）。
 - **`/ddz`、`/poker` 命令**：在 `sendMessage` 中先行拦截并 `return`，不经过渲染，无影响。
 - **滚动/贴底、新消息分隔线、未读定位**：均不依赖 `.body` 的文本节点结构，不受影响。
 - **历史缓存 50 条**：存原文，不改。
@@ -211,7 +222,27 @@ b.innerHTML = renderMd(t);
 
 前端渲染结果（真实浏览器内视觉）沙箱无法交互验证，如实标注 **NOT RUN**，以手动冒烟补充。
 
-## 六、非目标提醒
+## 六、与 CommonMark 的已知差异
+
+本实现只做「最小集」，不是 CommonMark 兼容实现。下表为实测行为，
+**均为有意取舍，不是待修 bug**（若新增语法，请先更新本表）：
+
+| 输入 | CommonMark | 本实现 |
+|---|---|---|
+| `> ---` / `> # h` | 引用内嵌套块级 | 引用内只做行内，标记退化为文字 |
+| `- a` + 空行 + `- b` | 松散列表，仍为一个 `<ul>` | 两个独立 `<ul>` |
+| `# 标题 #` | 剥掉尾部 `#` | 原样保留 |
+| `[x](https://a.cn)` | 生成链接 | 括号留字，URL 被自动链接成 `<a>` |
+| `   - 子项` | 嵌套列表 | 拍平为同级 `li`；4 空格缩进退化为段落 |
+| `~x~` / `_x_` / `__x__` | 单波浪为下标、下划线为强调 | 均原样显示 |
+| `*a\nb*` | `<em>`（软换行不打断强调） | 同左，**一致** |
+| `www.a.cn` / `a.cn` | 不自动链接 | 不自动链接，一致 |
+
+注：本节源于一次代码评审 —— 原注释与 `CHANGELOG` 曾声称「强调不跨换行」，
+与实现对不上，且对应测试用的是不平衡样本（假绿）。现已以实测为准修正说法，
+并用平衡样本 `*a\nb*` 锁定行为。
+
+## 七、非目标提醒
 
 - 不改部署方式（仍 `npm run deploy`）、不加第三方依赖、不引入构建步骤。
 - 不做完整 Markdown、不做图片、不做开关。

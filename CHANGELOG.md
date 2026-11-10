@@ -10,17 +10,20 @@
 - 块级语法：`h1`～`h6`、`ul`/`ol`/`li`、`blockquote`、`hr`、`pre`/`code`（围栏）、`p`。
   围栏内部**只转义、不解析**任何行内语法。
 - 行内语法：`**粗体**`、`*斜体*`、`` `行内代码` ``、`~~删除线~~`、`http(s)://` 自动链接。
-- `test/markdown.test.js`：50 个用例，含 XSS 反例、块级语法、链接 href 边界回归。
+- `test/markdown.test.js`：74 个用例，含 XSS 反例、块级语法、链接 href 边界回归。
 - `docs/superpowers/specs/2026-11-06-markdown-render-design.md`：设计文档。
 - `docs/superpowers/plans/2026-11-06-markdown-render.md`：实现计划。
 
 ### 变更
-- `wrangler.toml`：新增 `[assets]`，`directory = "./public"`，`binding = "ASSETS"`。
-- `src/worker.js`：内嵌脚本改为 `<script type="module">`，以
-  `import { renderMd } from "/markdown.js"` 引入；删除原 `renderMd.toString()` 注入。
+- `wrangler.toml`：新增 `[assets]`，`directory = "./public"`。
+  （不声明 `binding`：asset 命中时请求不进入 Worker，`env.ASSETS` 无用途，
+  声明了反而会让读者以为 worker 里有读取逻辑。）
+- `src/worker.js`：内嵌脚本改为 `<script type="module">`，以**动态 import**
+  `await import("/markdown.js")`（包在 try/catch 里）引入；删除原 `renderMd.toString()` 注入。
   服务端不再 import 渲染器。
 - `src/markdown.js` 已删除（迁移为 `public/markdown.js`）。
-- `addChat` 保持 `innerHTML = renderMd(t)`，仍为全项目唯一允许 HTML 承载服务端文本之处。
+- `addChat` 以 `innerHTML = renderMd(t)` 承载渲染结果，仍为全项目唯一允许 HTML
+  承载服务端文本之处；渲染器缺席时退化为 `textContent = t`（见下）。
 
 ### 修复
 - **渲染元素缺少 CSS 样式**：页面只定义了布局样式，未给 `h1-h6`/`p`/`ul`/`ol`/`li`/
@@ -34,7 +37,9 @@
     （`**x**` / `*x*` / `***x***`），替换为占位符并登记，直至无可配对。
   - 引入 **CommonMark 左右分隔符判定**：开标记右侧不能是空白、闭标记左侧不能是空白。
     这使 `5 * 3 * 2 = 30`、`a * b * c` 不再被误配为斜体。
-  - 嵌套**不跨越手动换行**（每个 `\n` 独立），避免长文本跨段远距离误配。
+  - 强调**可以**跨段落内的软换行（`*a\nb*` → `<em>`），与 CommonMark 一致：
+    软换行不打断强调，且分隔符判定要求标记紧邻非空白字符，故 `5 * 3\n2 * 4` 不受影响。
+    （早期注释与本文档曾错误声称「不跨换行」，已按实测修正。）
   - 结果：`**a *b* c**` → `<strong>a <em>b</em> c</strong>`；
     `*a**b**c*` → `<em>a<strong>b</strong>c</em>`；`***a***` → `<em><strong>a</strong></em>`。
 - **Windows 换行（CRLF）导致块级语法全部失效**：浏览器/粘贴内容带 `\r` 时，
@@ -66,7 +71,24 @@
 - 服务端协议、存储、广播零改动；历史缓存仍存原文，不留 HTML。
 
 ### 测试
-- 全量 221 个用例通过（原 147 + Markdown 73 + 样式断言 1），既有测试无回归。
+- 全量 **225** 个用例通过（原 147 + Markdown 74 + 样式断言 1 + 加载降级断言 3），既有测试无回归。
+
+### 评审后加固（code review follow-up）
+- **静态资源取不到时整页死掉**（真实故障模式）：`<script type="module">` 原先用
+  静态 `import { renderMd } from "/markdown.js"`。若 asset 未上传 / 被拦截 / 路由改动，
+  该 import 失败会让**整个 module 体不执行**，而它是页面唯一的脚本 ——
+  登录框、WebSocket、全部 UI 失效且无任何提示。实测：asset 未命中时请求回落到
+  Worker 返回 `200 text/html`，浏览器报 MIME 错误。现改为 try/catch 包裹的
+  **动态 import**，失败时 `renderMd` 为 `null`，`addChat` 退化为 `textContent`，
+  聊天核心功能不再依赖静态资源。由 `test/room.test.js` 三条断言锁定。
+- **删除线内链接交互不一致**：原 `del a { pointer-events: none }` 使鼠标不可点、
+  键盘却能激活。现去掉该规则，与 GitHub/CommonMark 行为一致（删除线只是文字样式，
+  不剥夺交互能力）。相应断言已改为「不得出现 pointer-events」。
+- **一个假绿测试**：旧用例 `嵌套不跨越手动换行` 用的是不平衡样本 `**a\n*b*`，
+  两种实现都会绿，实际没有锁住任何东西。已换成平衡样本并新增「不配对标记保持原文」用例。
+- **`wrangler.toml` 去掉未使用的 `binding = "ASSETS"`**。
+- **补文档缺口**：README 用法清单增加 Markdown 条；本文件补「已知差异」表；
+  设计文档增加「与 CommonMark 的差异」一节；新增最小 CI（`npm ci && npm test`）。
 
 ### 部署注意
 - 新增 `[assets]` 配置，首次部署需确认线上 `/` 仍返回 Worker 页面、
@@ -78,10 +100,30 @@
   `5 * 3 * 2 = 30` 不再被当成斜体。
 - ~~`**a *b* c**` 的粗体未生效~~ **已修复**：改为「对称优先、由内到外」后，
   `**a *b* c**` → `<strong>a <em>b</em> c</strong>`，`*a**b**c*` 也能正确嵌套。
-- 嵌套强调**不跨手动换行**：每个 `\n` 之间独立处理，避免长文本跨段误配。
-  因此 `**a\n*b*` 的 `**` 不会跨行闭合（符合预期，也防止了远距离误配）。
+- 嵌套强调**可以**跨段落内的软换行（与 CommonMark 一致）：`*a\nb*` → `<em>a\nb</em>`。
+  早期注释曾写「每个 `\n` 独立」——那是意图而非实现（`[^*]*?` 会吞 `\n`），
+  现已按实测修正注释，并用平衡样本（`*a\nb*`，而非假绿的 `**a\nb*`… ）在
+  `test/markdown.test.js` 中锁定。
 - 不支持嵌套列表、表格、图片 `![]()`、链接语法 `[文字](url)`。
 - 浏览器内视觉效果已由人工冒烟确认。
+
+### 与 CommonMark 的已知差异
+| 输入 | CommonMark | 本实现 | 是否为缺陷 |
+|---|---|---|---|
+| `> ---` / `> # h` | 引用内嵌套块级（分隔线/标题） | 引用内只做行内，标记退化为文字 | 已知局限（不做嵌套块级） |
+| `- a` + 空行 + `- b` | 松散列表，仍是一个 `<ul>` | 两个独立 `<ul>` | 已知局限 |
+| `# 标题 #` | 剥掉尾部 `#` | 原样保留 | 已知局限 |
+| `[x](https://a.cn)` | 生成链接 | 括号留字，URL 被自动链接成 `<a>` | 已知局限（不做链接语法） |
+| `   - 子项` | 嵌套列表 | 拍平成同级 `li`；4 空格缩进则退化为段落 | 已知局限（不做嵌套列表） |
+| `~x~` / `_x_` / `__x__` | 单波浪为下标、下划线为强调 | 均原样显示 | 已知局限（白名单只留 `~~`） |
+| `*a\nb*` | 成 `<em>` | 成 `<em>` | **一致**，早期注释错写为不一致 |
+| `www.example.com` / `a.cn` | 不自动链接 | 不自动链接 | 一致 |
+
+### 已被否决的方案（避免反复讨论）
+- 图片 `![]()`：不解析。外链图片进房即请求第三方主机，泄露 IP/UA/在线时长，
+  可被用做精确已读追踪；且会把用户文本首次放入属性位置，推翻现有「零 sanitizer」安全论证。
+  如以后要做，优先「占位符 + 点击外开」而非自动 `<img src>`。
+- 表格、嵌套列表、完整 Markdown、渲染开关：均按 YAGNI 排除。
 
 ### 非目标
 - 不解析图片 `![]()` 与链接语法 `[文字](url)`，均按纯文本显示。

@@ -1,0 +1,26 @@
+name: CI
+
+# 只跑测试：本项目 225 个用例覆盖 Markdown 渲染（含 XSS 反例）、聊天协议、
+# 斗地主/德州规则与页面样式断言，够挡住大多数回归，且不需要任何 secret。
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元/集成测试
+        run: npm test
