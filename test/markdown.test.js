@@ -310,10 +310,18 @@ describe("粗体内嵌斜体（嵌套）", () => {
   it("三连星号同时产生粗体与斜体", () => {
     expect(renderMd("***a***")).toBe("<p><em><strong>a</strong></em></p>");
   });
-  it("嵌套不跨越手动换行", () => {
-    // 长文本下跨段落找对称标记会误配，故每个 \n 之间独立
+  it("强调可跨段落内的软换行（与 CommonMark 一致）", () => {
+    // 旧注释/CHANGELOG 声称「不跨换行、每个 \n 独立」，但正则里的 [^*]*?
+    // 会吞掉 \n，实测 *a\nb* 就是 em。这不是缺陷：CommonMark 允许强调
+    // 跨段落内的软换行，故保留行为、修正说法，并用**平衡**样本锁住它
+    // （旧的 **a\n*b* 是不平衡样本，两种实现都绿，属于假绿）。
+    expect(renderMd("*a\nb*")).toBe("<p><em>a\nb</em></p>");
+    expect(renderMd("**a\nb**")).toBe("<p><strong>a\nb</strong></p>");
+  });
+  it("跨行但不配对的标记保持原文", () => {
     expect(renderMd("**a\n*b*")).toBe("<p>**a\n<em>b</em></p>");
     expect(renderMd("a * b\nc * d")).toBe("<p>a * b\nc * d</p>");
+    expect(renderMd("5 * 3\n2 * 4")).toBe("<p>5 * 3\n2 * 4</p>");
   });
 });
 

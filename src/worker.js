@@ -943,9 +943,6 @@ function renderPage() {
   }
   .msg .body pre code { background: none; padding: 0; font-size: 13px; }
   .msg .body del { text-decoration: line-through; color: #888; }
-  /* 删除线内的链接视为已废弃：保留视觉但不可点击。
-     分隔符均无标签，故 del 内只可能是 renderMd 生成的 <a>。 */
-  .msg .body del a { pointer-events: none; cursor: default; }
   .msg .body hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
   .msg .body a { color: #2f6feb; text-decoration: underline; word-break: break-all; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
@@ -1008,13 +1005,22 @@ function renderPage() {
     </form>
   </div>
 <script type="module">
-// 最小 Markdown 渲染器以静态资源 /markdown.js 提供（public/markdown.js，单一源），
-// 前端以 ES module import 引入。
+// 最小 Markdown 渲染器以静态资源 /markdown.js 提供（public/markdown.js，单一源）。
 // 早期版本用 renderMd.toString() 内联注入，导致函数体内不得出现任何嵌套函数
 // （esbuild keepNames 会插入 __name(...)，在内联脚本中 ReferenceError），
-// 块级解析无法实现；迁移到 [assets] + module import 后该约束已解除。
-// 注意：module 脚本天然 defer，import 完成后才执行，此时 DOM 已就绪。
-import { renderMd } from "/markdown.js";
+// 块级解析无法实现；迁移到 [assets] + ES module 后该约束已解除。
+//
+// 必须是**动态** import 且包在 try 里，不能写静态 import：
+// static import 一旦失败（asset 未上传、被拦截、路由改动），整个 module 体都不会
+// 执行，而它是页面唯一的脚本 —— 登录框/WebSocket/UI 全部失效且用户看不到提示。
+// 实测：asset 未命中时请求回落到 Worker 并返回 200 text/html，浏览器报 MIME 错误。
+// 动态 import 失败时 renderMd 保持 null，addChat 退化为纯文本，聊天功能不受影响。
+let renderMd = null;
+try {
+  ({ renderMd } = await import("/markdown.js"));
+} catch (err) {
+  console.error("markdown.js 加载失败，消息退化为纯文本显示", err);
+}
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false, lastHintAt = 0;
   var $ = function (id) { return document.getElementById(id); };
@@ -1454,7 +1460,13 @@ import { renderMd } from "/markdown.js";
     // （h1-h6/ul/ol/li/pre/blockquote/hr/p），行内容再整体转义后仅对白名单标记
     // （strong/em/code/del/a）套标签，标签均由常量拼接、无属性入口，
     // 故此处 innerHTML 安全。其余位置（昵称、系统消息、牌面等）保持 textContent，勿改。
-    b.innerHTML = renderMd(t);
+    // renderMd 为 null 时（见文件顶部动态 import 的降级说明）退化为纯文本，
+    // 保证聊天这一核心功能不依赖静态资源能否取到。
+    if (renderMd) {
+      b.innerHTML = renderMd(t);
+    } else {
+      b.textContent = t;
+    }
     div.appendChild(head); div.appendChild(b);
     $("messages").appendChild(div);
     if (wasBottom) scrollToBottom();
