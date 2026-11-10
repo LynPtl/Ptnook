@@ -44,6 +44,29 @@ describe("ChatRoom", () => {
     expect(html).not.toContain('title="消息提示音开关">🔔</button>');
   });
 
+  it("Markdown 块级与行内元素有可辨识样式", async () => {
+    // 渲染器输出 h1-h6/ul/ol/blockquote/pre/code/del/hr，
+    // 页面必须为其提供样式，否则中文环境下删除线、代码块等视觉不可辨。
+    const res = await SELF.fetch("https://example.com/");
+    const html = await res.text();
+    // 删除线：必须显式声明，不能依赖浏览器默认
+    expect(html).toMatch(/\.msg \.body del\s*\{[^}]*text-decoration\s*:\s*line-through/);
+    // 代码块：等宽 + 背景
+    expect(html).toMatch(/\.msg \.body pre\s*\{/);
+    expect(html).toMatch(/\.msg \.body pre\s+code\s*\{/);
+    // 引用：左侧竖线
+    expect(html).toMatch(/\.msg \.body blockquote\s*\{[^}]*border-left/);
+    // 标题：不继承 body 的默认字号（避免 h1 过大撞版面）
+    expect(html).toMatch(/\.msg \.body h1\s*\{/);
+    // 列表：保留缩进
+    expect(html).toMatch(/\.msg \.body ul[^{]*\{[^}]*padding-left/);
+    // 分割线处于 .body 内部
+    expect(html).toMatch(/\.msg \.body hr\s*\{/);
+    // 删除线内的链接照常可点击：与 GitHub/CommonMark 一致，删除线只是文字样式，
+    // 不应禁用交互（此前的 pointer-events:none 会造成「鼠标点不动、键盘能点」的不一致）。
+    expect(html).not.toMatch(/\.msg \.body del a\s*\{[^}]*pointer-events/);
+  });
+
   it("加入广播 system + presence", async () => {
     const a = await openWS("r1", "小明");
     const msgs = [];
@@ -855,5 +878,37 @@ describe("德州扑克 散桌/互斥/清理", () => {
       await instance.alarm();
       expect(await state.storage.get("holdem")).toBeUndefined();
     });
+  });
+});
+
+// 前端脚本的健壮性：页面只有一个 <script type="module">，它一旦不执行，
+// 登录框、WebSocket、全部 UI 都会失效且没有任何提示。这里锁定三条不变量。
+describe("前端脚本加载降级与交互策略", () => {
+  async function pageHtml() {
+    const res = await SELF.fetch("https://example.com/");
+    return res.text();
+  }
+
+  it("不得用静态 import 引入 markdown.js", async () => {
+    // 静态 import 失败 → 整个 module 体不执行 → 整页聊天功能死掉。
+    // 实测：asset 未命中时请求回落到 Worker，返回 200 text/html，
+    // 浏览器报 MIME 错误，脚本完全不执行。故必须走动态 import。
+    const html = await pageHtml();
+    expect(html).not.toContain('from "/markdown.js"');
+  });
+
+  it("动态 import 必须包在 try/catch 里", async () => {
+    const html = await pageHtml();
+    const importAt = html.indexOf('await import("/markdown.js")');
+    expect(importAt).toBeGreaterThan(-1);
+    expect(html.lastIndexOf("try", importAt)).toBeGreaterThan(-1);
+    expect(html.indexOf("catch", importAt)).toBeGreaterThan(importAt);
+  });
+
+  it("渲染器缺失时退化为纯文本，不留下未加保护的 innerHTML", async () => {
+    const html = await pageHtml();
+    expect(html).toMatch(
+      /if \(renderMd\) \{\s*b\.innerHTML = renderMd\(t\);\s*\} else \{\s*b\.textContent = t;/
+    );
   });
 });

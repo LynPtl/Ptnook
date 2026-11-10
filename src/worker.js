@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
+// 注意：不再 import renderMd。前端经 /markdown.js 的 ES module import 引入，
+// 服务端无需持有它（public/markdown.js 是唯一源）。
 
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -910,6 +912,39 @@ function renderPage() {
   .msg .nick { font-weight: 600; margin-right: 6px; }
   .msg .time { color: #bbb; font-size: 12px; margin-right: 6px; }
   .msg .body { white-space: pre-wrap; }
+  /* Markdown 渲染元素的样式。
+     renderMd 输出的标签集合为 h1-h6/p/ul/ol/li/blockquote/pre/code/hr/strong/em/del/a，
+     必须与之一一对应，否则渲染正确但视觉不可辨（例如中文删除线几乎看不出）。 */
+  .msg .body > :first-child { margin-top: 0; }
+  .msg .body > :last-child { margin-bottom: 0; }
+  .msg .body h1, .msg .body h2, .msg .body h3,
+  .msg .body h4, .msg .body h5, .msg .body h6 {
+    margin: 8px 0 4px; line-height: 1.3; font-weight: 700;
+  }
+  .msg .body h1 { font-size: 20px; }
+  .msg .body h2 { font-size: 18px; }
+  .msg .body h3 { font-size: 16px; }
+  .msg .body h4, .msg .body h5, .msg .body h6 { font-size: 15px; }
+  .msg .body p { margin: 4px 0; }
+  .msg .body ul, .msg .body ol { margin: 4px 0; padding-left: 22px; }
+  .msg .body li { margin: 2px 0; }
+  .msg .body blockquote {
+    margin: 6px 0; padding: 2px 0 2px 10px;
+    border-left: 3px solid #d0d0d0; color: #555;
+  }
+  .msg .body code {
+    background: #e0e0e0; border-radius: 4px; padding: 1px 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  .msg .body pre {
+    background: #e0e0e0; border: 1px solid #d0d0d0; border-radius: 6px;
+    padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre;
+  }
+  .msg .body pre code { background: none; padding: 0; font-size: 13px; }
+  .msg .body del { text-decoration: line-through; color: #888; }
+  .msg .body hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
+  .msg .body a { color: #2f6feb; text-decoration: underline; word-break: break-all; }
   .sys { color: #999; font-size: 13px; text-align: center; margin: 8px 0; }
   .divider { color: #e0533d; font-size: 12px; text-align: center; margin: 12px 0; border-top: 1px solid #f0c9c2; padding-top: 6px; }
   #ddzbar { border-top: 1px solid #eee; background: #fff; padding: 8px 12px; display: none; }
@@ -969,7 +1004,23 @@ function renderPage() {
       <button type="submit">发送</button>
     </form>
   </div>
-<script>
+<script type="module">
+// 最小 Markdown 渲染器以静态资源 /markdown.js 提供（public/markdown.js，单一源）。
+// 早期版本用 renderMd.toString() 内联注入，导致函数体内不得出现任何嵌套函数
+// （esbuild keepNames 会插入 __name(...)，在内联脚本中 ReferenceError），
+// 块级解析无法实现；迁移到 [assets] + ES module 后该约束已解除。
+//
+// 必须是**动态** import 且包在 try 里，不能写静态 import：
+// static import 一旦失败（asset 未上传、被拦截、路由改动），整个 module 体都不会
+// 执行，而它是页面唯一的脚本 —— 登录框/WebSocket/UI 全部失效且用户看不到提示。
+// 实测：asset 未命中时请求回落到 Worker 并返回 200 text/html，浏览器报 MIME 错误。
+// 动态 import 失败时 renderMd 保持 null，addChat 退化为纯文本，聊天功能不受影响。
+let renderMd = null;
+try {
+  ({ renderMd } = await import("/markdown.js"));
+} catch (err) {
+  console.error("markdown.js 加载失败，消息退化为纯文本显示", err);
+}
 (function () {
   var room, nick, ws, reconnectDelay = 500, manualClose = false, reconnectTimer = null, pendingDivider = false, lastHintAt = 0;
   var $ = function (id) { return document.getElementById(id); };
@@ -1405,7 +1456,17 @@ function renderPage() {
     head.appendChild(s); head.appendChild(tm);
     var b = document.createElement("div");
     b.className = "body";
-    b.textContent = t;
+    // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先按行识别块级结构
+    // （h1-h6/ul/ol/li/pre/blockquote/hr/p），行内容再整体转义后仅对白名单标记
+    // （strong/em/code/del/a）套标签，标签均由常量拼接、无属性入口，
+    // 故此处 innerHTML 安全。其余位置（昵称、系统消息、牌面等）保持 textContent，勿改。
+    // renderMd 为 null 时（见文件顶部动态 import 的降级说明）退化为纯文本，
+    // 保证聊天这一核心功能不依赖静态资源能否取到。
+    if (renderMd) {
+      b.innerHTML = renderMd(t);
+    } else {
+      b.textContent = t;
+    }
     div.appendChild(head); div.appendChild(b);
     $("messages").appendChild(div);
     if (wasBottom) scrollToBottom();
