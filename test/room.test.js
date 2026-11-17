@@ -1082,3 +1082,82 @@ describe("前端粘贴图片", () => {
     expect(html).toMatch(/\.msg \.body img\s*\{/);
   });
 });
+
+describe("评审修复：删除保证", () => {
+  it("淘汰删图失败时保留账本，交给 alarm 重试", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-prune-fail"));
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.imageClient = { remove: async () => false };
+      await instance.trackImage("img:keep");
+      await instance.pruneDroppedImages([{ text: "![](/img/img%3Akeep)" }], []);
+      expect(await state.storage.get("img:img:keep")).toBeTypeOf("number");
+    });
+  });
+
+  it("同 id 仍被窗口内消息引用时不删文件，账本保留", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-dup"));
+    await runInDurableObject(stub, async (instance, state) => {
+      const removed = [];
+      instance.imageClient = { remove: async (id) => { removed.push(id); return true; } };
+      await instance.trackImage("img:dup");
+      await instance.pruneDroppedImages(
+        [{ text: "![](/img/img%3Adup)" }],
+        [{ nick: "B", text: "看 ![](/img/img%3Adup)", ts: 2 }]
+      );
+      expect(removed).toEqual([]);
+      expect(await state.storage.get("img:img:dup")).toBeTypeOf("number");
+    });
+  });
+
+  it("alarm 每轮最多删 40 张，剩下的排下一轮而不是记失败", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-batch"));
+    await runInDurableObject(stub, async (instance, state) => {
+      const bulk = {};
+      for (let i = 0; i < 60; i++) bulk["img:seed-" + i] = 1;
+      await state.storage.put(bulk);
+      const removed = [];
+      instance.imageClient = { remove: async (id) => { removed.push(id); return true; } };
+      await instance.alarm();
+      expect(removed.length).toBe(40);
+      expect((await state.storage.list({ prefix: "img:" })).size).toBe(20);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+      expect(await state.storage.get("imgAttempts")).toBeUndefined();
+    });
+  });
+
+  it("trackImage 在没有闹钟时兜底排一个，保证上传后一定会被清理", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-alarm-arm"));
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.deleteAlarm();
+      await instance.trackImage("img:a");
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
+  });
+});
+
+describe("评审修复：路由边界", () => {
+  beforeEach(() => {
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+  });
+  afterEach(() => {
+    fetchMock.assertNoPendingInterceptors();
+  });
+
+  it("读取代理拒绝 image/svg+xml（与上传白名单一致）", async () => {
+    fetchMock
+      .get("https://kvault.test")
+      .intercept({ path: "/file/img%3Asvg", method: "GET" })
+      .reply(200, "<svg/>", { headers: { "Content-Type": "image/svg+xml" } });
+    expect((await SELF.fetch("https://example.com/img/img%3Asvg")).status).toBe(404);
+  });
+
+  it("缺少 Content-Length 的上传直接 411，不先缓冲整个 body", async () => {
+    const res = await SELF.fetch("https://example.com/upload?room=img-len", {
+      method: "POST",
+      headers: { Origin: "https://example.com", "Content-Type": "image/webp" },
+      body: new Uint8Array(0),
+    });
+    expect(res.status).toBe(411);
+  });
+});

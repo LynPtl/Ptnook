@@ -404,3 +404,16 @@ describe("本域图片", () => {
     expect(html).toContain("&lt;img");
   });
 });
+
+describe("本域图片：alt 必须惰性", () => {
+  it("alt 里的 URL 不会变成标签", () => {
+    expect(renderMd("![see https://x.com](/img/a)")).toBe(
+      '<p><img src="/img/a" alt="see https://x.com" loading="lazy" referrerpolicy="no-referrer"></p>'
+    );
+  });
+  it("alt 里的强调标记原样保留", () => {
+    expect(renderMd("![**粗**](/img/a)")).toBe(
+      '<p><img src="/img/a" alt="**粗**" loading="lazy" referrerpolicy="no-referrer"></p>'
+    );
+  });
+});

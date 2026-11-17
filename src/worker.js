@@ -125,33 +125,51 @@ export class ChatRoom extends DurableObject {
     if (existing.size >= 200) return { ok: false, reason: "full" };
     rate.n += 1;
     await this.ctx.storage.put({ ["img:" + id]: now, imgRate: rate });
+    // 兜底排闹钟：房间可能只被上传请求创建（WS 从未连上），
+    // 那样就没有 webSocketClose 去排清理，图片会永远留着。
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 30 * 60 * 1000);
+    }
     return { ok: true };
   }
 
   // 消息被 50 条窗口淘汰时调用：只删本房间账本里登记过的 id，
-  // 防止伪造 ![](/img/<别人的id>) 触发跨房间误删。
-  async pruneDroppedImages(items) {
+  // 防止伪造 ![](/img/<别人的id>) 触发跨房间误删；
+  // 仍被窗口内消息引用的 id 不删（K-Vault 去重会让同一 id 出现多次）。
+  // 只有图床确认删掉（含 404）才销账，否则留着交给 alarm 重试。
+  async pruneDroppedImages(items, keepItems) {
     const ids = new Set();
     for (const it of items || []) {
       for (const id of extractImageIds(it && it.text)) ids.add(id);
     }
+    if (ids.size === 0) return;
+    const stillUsed = new Set();
+    for (const it of keepItems || []) {
+      for (const id of extractImageIds(it && it.text)) stillUsed.add(id);
+    }
     for (const id of ids) {
+      if (stillUsed.has(id)) continue;
       const key = "img:" + id;
       if ((await this.ctx.storage.get(key)) === undefined) continue;
-      await this.ctx.storage.delete(key);
+      let ok = false;
       try {
-        await this.imageClient.remove(id);
+        ok = await this.imageClient.remove(id);
       } catch {}
+      if (ok) await this.ctx.storage.delete(key);
     }
   }
 
-  // 房间空闲兜底删除。失败的留在账本里，最多重试 2 轮后放弃，
-  // 避免图床长期故障时无限重试。
+  // 房间空闲兜底删除。一次 alarm 只处理一批：免费版每次调用只有 50 个子请求，
+  // 200 张账本必须分轮删，否则后半截会被误判成"图床失败"而整批丢账。
+  // 真失败（5xx/网络错）才计数，最多重试 2 轮后放弃。
   async purgeImages() {
-    const keys = await this.ctx.storage.list({ prefix: "img:" });
-    if (keys.size === 0) return;
+    const keys = await this.ctx.storage.list({ prefix: "img:", limit: IMG_PURGE_BATCH + 1 });
+    if (keys.size === 0) {
+      await this.ctx.storage.delete("imgAttempts");
+      return;
+    }
     let failed = 0;
-    for (const key of keys.keys()) {
+    for (const key of [...keys.keys()].slice(0, IMG_PURGE_BATCH)) {
       let ok = false;
       try {
         ok = await this.imageClient.remove(key.slice(4));
@@ -159,16 +177,22 @@ export class ChatRoom extends DurableObject {
       if (ok) await this.ctx.storage.delete(key);
       else failed += 1;
     }
-    if (failed === 0) {
+    const left = await this.ctx.storage.list({ prefix: "img:", limit: 1 });
+    if (left.size === 0) {
       await this.ctx.storage.delete("imgAttempts");
       // 成功即收尾：清掉上一轮失败时设置的 5 分钟重试闹钟。
       await this.ctx.storage.deleteAlarm();
       return;
     }
+    if (failed === 0) {
+      // 只是还有下一批，继续跑，不计失败。
+      await this.ctx.storage.setAlarm(Date.now() + 60 * 1000);
+      return;
+    }
     const attempts = ((await this.ctx.storage.get("imgAttempts")) || 0) + 1;
     if (attempts > 2) {
-      const left = await this.ctx.storage.list({ prefix: "img:" });
-      await this.ctx.storage.delete([...left.keys(), "imgAttempts"]);
+      const rest = await this.ctx.storage.list({ prefix: "img:" });
+      await this.ctx.storage.delete([...rest.keys(), "imgAttempts"]);
       return;
     }
     await this.ctx.storage.put("imgAttempts", attempts);
@@ -181,7 +205,7 @@ export class ChatRoom extends DurableObject {
     let dropped = [];
     if (history.length > 50) dropped = history.splice(0, history.length - 50);
     await this.ctx.storage.put("history", history);
-    if (dropped.length) this.ctx.waitUntil(this.pruneDroppedImages(dropped));
+    if (dropped.length) this.ctx.waitUntil(this.pruneDroppedImages(dropped, history));
   }
 
   broadcast(data) {
@@ -969,6 +993,8 @@ export default {
 };
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+// 免费版 Workers 每次调用上限 50 个子请求，留出余量给 trackImage/其它调用。
+const IMG_PURGE_BATCH = 40;
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -1000,9 +1026,12 @@ async function handleUpload(request, url, env, ctx) {
   const type = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   if (!isAllowedImageType(type)) return jsonResponse({ error: "不支持的图片类型" }, 415);
 
-  if (Number(request.headers.get("Content-Length") || 0) > MAX_UPLOAD_BYTES) {
-    return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
+  // 先看声明的长度再读 body：缺失/非法长度直接拒，避免按平台上限缓冲。
+  const declared = Number(request.headers.get("Content-Length"));
+  if (!Number.isFinite(declared) || declared <= 0) {
+    return jsonResponse({ error: "缺少合法的 Content-Length" }, 411);
   }
+  if (declared > MAX_UPLOAD_BYTES) return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
   const bytes = await request.arrayBuffer();
   if (bytes.byteLength > MAX_UPLOAD_BYTES) return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
   if (bytes.byteLength === 0) return jsonResponse({ error: "空文件" }, 400);
@@ -1043,7 +1072,8 @@ async function handleImage(request, env, rawId) {
   if (!upstream || !upstream.ok) return new Response("not found", { status: 404 });
 
   const type = upstream.headers.get("Content-Type") || "";
-  if (!type.startsWith("image/")) return new Response("not found", { status: 404 });
+  // 与上传侧同一白名单：image/svg+xml 会在本站 origin 下执行脚本，必须挡掉。
+  if (!isAllowedImageType(type)) return new Response("not found", { status: 404 });
 
   return new Response(upstream.body, {
     status: 200,
@@ -1631,7 +1661,7 @@ try {
     b.className = "body";
     // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先按行识别块级结构
     // （h1-h6/ul/ol/li/pre/blockquote/hr/p），行内容再整体转义后仅对白名单标记
-    // （strong/em/code/del/a）套标签，标签均由常量拼接、无属性入口，
+    // （strong/em/code/del/a/img）套标签，标签均由常量拼接、无属性入口，
     // 故此处 innerHTML 安全。其余位置（昵称、系统消息、牌面等）保持 textContent，勿改。
     // renderMd 为 null 时（见文件顶部动态 import 的降级说明）退化为纯文本，
     // 保证聊天这一核心功能不依赖静态资源能否取到。
@@ -1663,16 +1693,22 @@ try {
       var url = URL.createObjectURL(file);
       var img = new Image();
       img.onload = function () {
-        var w = img.naturalWidth || 1;
-        var h = img.naturalHeight || 1;
-        var scale = Math.min(1, 1600 / Math.max(w, h));
-        var canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(w * scale));
-        canvas.height = Math.max(1, Math.round(h * scale));
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(url);
-        if (!canvas.toBlob) { resolve(file); return; }
-        canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", quality);
+        try {
+          var w = img.naturalWidth || 1;
+          var h = img.naturalHeight || 1;
+          var scale = Math.min(1, 1600 / Math.max(w, h));
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          if (!canvas.toBlob) { resolve(file); return; }
+          canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", quality);
+        } catch (_) {
+          // 上下文创建/绘制失败：原图交给服务端校验，绝不让 Promise 悬着
+          URL.revokeObjectURL(url);
+          resolve(file);
+        }
       };
       img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
       img.src = url;
