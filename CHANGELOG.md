@@ -2,6 +2,29 @@
 
 本项目无既有 CHANGELOG，自本次起按版本记录功能变更。
 
+## 2026-11-17 — 图片消息（粘贴上传 + 房间级自动删除）
+
+### 新增
+- `src/images.js`：K-Vault 图床客户端（上传 / 删除 / 读取代理），`fetch` 可注入；
+  地址与 Token 只从 `KVAULT_BASE` / `KVAULT_TOKEN` 读，仓库零个人信息。
+- `POST /upload`：同源校验 + 类型白名单 + ≤2 MiB + 每房间 20 次/分钟 + 账本 200 张。
+- `GET /img/<id>`：代理图床文件，只放行 `image/*`，加 `Cache-Control: max-age=1800`。
+- 前端：输入框 `paste` 上传，canvas 压到最长边 1600px / WebP；插入 `![](/img/<id>)` 到光标处。
+- `ChatRoom` 图片账本：一图一键 `img:<id>`；消息被 50 条窗口淘汰时精确删图，
+  `alarm()` 房间空闲 30 分钟兜底删除，失败最多重试 2 轮。
+- `test/images.test.js`；`test/room.test.js` 增补账本、路由、前端接线用例。
+
+### 变更
+- `public/markdown.js`：新增本域 `![](/img/<id>)` → `<img>` 规则；外部图片仍按文字显示，
+  维持"不加载外部图片"的隐私边界。
+- `vitest.config.js`：测试用 miniflare 注入假图床绑定。
+- `README.md`：新增"图片消息（可选）"配置说明。
+- `.gitignore`：忽略 `.superpowers/`（本地实施工作区）。
+
+### 已知限制
+- K-Vault 对相同内容做 SHA-256 去重并返回同一 file id，跨房间同图会一起被删。
+- 图床删除失败时只删 KV，Telegram 侧可能残留；重试 2 轮后放弃。
+
 ## 2026-11-06 — 聊天消息支持 Markdown 渲染（块级 + 行内）
 
 ### 新增

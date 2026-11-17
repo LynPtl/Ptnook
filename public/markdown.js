@@ -1,7 +1,8 @@
 // 最小 Markdown 渲染：块级 + 行内。零依赖。
 //
 // 安全模型：先整体转义，再仅对白名单标记套标签。
-// 用户文本只出现在标签内容位置，从不进入属性位置，
+// 用户文本只出现在标签内容位置；唯一进入属性位置的是本域图片的
+// alt（已 escapeHtml）与 src（受字符类限制，只可能是 /img/...），
 // 故无需通用 sanitizer（见 docs/superpowers/specs/2026-11-06-markdown-render-design.md）。
 //
 // 本文件是**唯一源**，经 `[assets]` 以静态资源 /markdown.js 提供，
@@ -114,6 +115,10 @@ function renderEmphasis(text) {
   return text;
 }
 
+// 本域图片：只认 /img/<encodeURIComponent(id)>。字符类与 src/images.js 的
+// extractImageIds 保持一致，两边改动必须同步。
+const IMG_RE = /!\[([^\]\n]{0,100})\]\((\/img\/[A-Za-z0-9_.%~-]{1,512})\)/g;
+
 function renderInline(line) {
   if (!line) return "";
 
@@ -123,6 +128,18 @@ function renderInline(line) {
   let s = line.replace(/`([^`\n]+)`/g, (m, code) => {
     slots.push(code);
     return "\u0000" + (slots.length - 1) + "\u0000";
+  });
+
+  // 1b. 本域图片整体抽成占位符（U+0003，与 code/emphasis 的占位符互不干扰）。
+  //     必须在强调/删除线/自动链接**之前**抽走：否则 alt 里会混进已经生成的
+  //     <a>/<strong> 标签，塞进属性位置把标签拆坏（alt 里的 URL 会被再链接一次）。
+  //     src 受字符类限制、alt 已由 escapeHtml 处理，占位符里存的是成品标签。
+  const imgs = [];
+  s = s.replace(IMG_RE, (m, alt, src) => {
+    imgs.push(
+      '<img src="' + src + '" alt="' + alt + '" loading="lazy" referrerpolicy="no-referrer">'
+    );
+    return "\u0003" + (imgs.length - 1) + "\u0003";
   });
 
   // 2. 强调与删除线（分隔符链判定，支持嵌套）
@@ -155,8 +172,9 @@ function renderInline(line) {
     );
   });
 
-  // 4. 回填行内代码
-  return s.replace(/\u0000(\d+)\u0000/g, (m, i) => "<code>" + slots[Number(i)] + "</code>");
+  // 4. 回填行内代码，最后回填图片（图片标签不再经过任何行内规则）
+  const withCode = s.replace(/\u0000(\d+)\u0000/g, (m, i) => "<code>" + slots[Number(i)] + "</code>");
+  return withCode.replace(/\u0003(\d+)\u0003/g, (m, i) => imgs[Number(i)]);
 }
 
 // ---- 块级识别（在**未转义**原文上进行，避免 &gt; 干扰引用识别）----
@@ -193,8 +211,8 @@ export function renderMd(raw) {
   if (typeof raw !== "string") return "";
 
   // 1. 剔除所有用作内部占位符的控制字符，防止用户伪造占位符。
-  //    \u0000 用于行内代码占位；\u0001/\u0002 用于强调嵌套保护。
-  let cleaned = raw.replace(/[\u0000\u0001\u0002]/g, "");
+  //    \u0000 用于行内代码占位；\u0001/\u0002 用于强调嵌套保护；\u0003 用于图片占位。
+  let cleaned = raw.replace(/[\u0000\u0001\u0002\u0003]/g, "");
   // 1b. 换行归一化：\r\n 与孤立 \r 统一为 \n。
   //     Windows 浏览器 / 粘贴内容可能带 \r，残留会让所有块级正则失效
   //     （标题、列表、引用全部退化成普通段落）。已实测踩中。

@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
+import { createImageClient, extractImageIds, isAllowedImageType } from "./images.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
 // 注意：不再 import renderMd。前端经 /markdown.js 的 ES module import 引入，
@@ -9,6 +10,8 @@ export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.ctx = ctx;
+    // 图床客户端：配置全在环境变量里，未配置时 enabled=false，图片功能静默不可用。
+    this.imageClient = createImageClient(env);
     // 从 hibernation 恢复：无需额外 sessions map，用 ctx.getWebSockets() 即可
   }
 
@@ -97,18 +100,112 @@ export class ChatRoom extends DurableObject {
   }
 
   async alarm() {
-    if (this.ctx.getWebSockets().length === 0) {
-      await this.ctx.storage.delete("history");
-      await this.ctx.storage.delete("ddz");
-      await this.ctx.storage.delete("holdem");
+    // 有人已经回来（重连），保留一切，等下一次空闲。
+    if (this.ctx.getWebSockets().length !== 0) return;
+    await this.purgeImages();
+    await this.ctx.storage.delete("history");
+    await this.ctx.storage.delete("ddz");
+    await this.ctx.storage.delete("holdem");
+  }
+
+  // ===== 图片账本 =====
+  // 一图一键（img:<id>）：账本与 rate 分两把键，避免并发 read-modify-write 丢账。
+  // 只记账，不存字节——DO 单 value 上限 128 KiB。
+
+  async trackImage(id) {
+    if (typeof id !== "string" || !id) return { ok: false, reason: "bad" };
+    const now = Date.now();
+    const rate = (await this.ctx.storage.get("imgRate")) || { start: now, n: 0 };
+    if (now - rate.start > 60 * 1000) {
+      rate.start = now;
+      rate.n = 0;
     }
+    if (rate.n >= 20) return { ok: false, reason: "rate" };
+    const existing = await this.ctx.storage.list({ prefix: "img:", limit: 201 });
+    if (existing.size >= 200) return { ok: false, reason: "full" };
+    rate.n += 1;
+    await this.ctx.storage.put({ ["img:" + id]: now, imgRate: rate });
+    // 兜底排闹钟：房间可能只被上传请求创建（WS 从未连上），
+    // 那样就没有 webSocketClose 去排清理，图片会永远留着。
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 30 * 60 * 1000);
+    }
+    return { ok: true };
+  }
+
+  // 消息被 50 条窗口淘汰时调用：只删本房间账本里登记过的 id，
+  // 防止伪造 ![](/img/<别人的id>) 触发跨房间误删；
+  // 仍被窗口内消息引用的 id 不删（K-Vault 去重会让同一 id 出现多次）。
+  // 只有图床确认删掉（含 404）才销账，否则留着交给 alarm 重试。
+  async pruneDroppedImages(items, keepItems) {
+    const ids = new Set();
+    for (const it of items || []) {
+      for (const id of extractImageIds(it && it.text)) ids.add(id);
+    }
+    if (ids.size === 0) return;
+    const stillUsed = new Set();
+    for (const it of keepItems || []) {
+      for (const id of extractImageIds(it && it.text)) stillUsed.add(id);
+    }
+    for (const id of ids) {
+      if (stillUsed.has(id)) continue;
+      const key = "img:" + id;
+      if ((await this.ctx.storage.get(key)) === undefined) continue;
+      let ok = false;
+      try {
+        ok = await this.imageClient.remove(id);
+      } catch {}
+      if (ok) await this.ctx.storage.delete(key);
+    }
+  }
+
+  // 房间空闲兜底删除。一次 alarm 只处理一批：免费版每次调用只有 50 个子请求，
+  // 200 张账本必须分轮删，否则后半截会被误判成"图床失败"而整批丢账。
+  // 真失败（5xx/网络错）才计数，最多重试 2 轮后放弃。
+  async purgeImages() {
+    const keys = await this.ctx.storage.list({ prefix: "img:", limit: IMG_PURGE_BATCH + 1 });
+    if (keys.size === 0) {
+      await this.ctx.storage.delete("imgAttempts");
+      return;
+    }
+    let failed = 0;
+    for (const key of [...keys.keys()].slice(0, IMG_PURGE_BATCH)) {
+      let ok = false;
+      try {
+        ok = await this.imageClient.remove(key.slice(4));
+      } catch {}
+      if (ok) await this.ctx.storage.delete(key);
+      else failed += 1;
+    }
+    const left = await this.ctx.storage.list({ prefix: "img:", limit: 1 });
+    if (left.size === 0) {
+      await this.ctx.storage.delete("imgAttempts");
+      // 成功即收尾：清掉上一轮失败时设置的 5 分钟重试闹钟。
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    if (failed === 0) {
+      // 只是还有下一批，继续跑，不计失败。
+      await this.ctx.storage.setAlarm(Date.now() + 60 * 1000);
+      return;
+    }
+    const attempts = ((await this.ctx.storage.get("imgAttempts")) || 0) + 1;
+    if (attempts > 2) {
+      const rest = await this.ctx.storage.list({ prefix: "img:" });
+      await this.ctx.storage.delete([...rest.keys(), "imgAttempts"]);
+      return;
+    }
+    await this.ctx.storage.put("imgAttempts", attempts);
+    await this.ctx.storage.setAlarm(Date.now() + 5 * 60 * 1000);
   }
 
   async appendHistory(item) {
     const history = (await this.ctx.storage.get("history")) || [];
     history.push(item);
-    if (history.length > 50) history.splice(0, history.length - 50);
+    let dropped = [];
+    if (history.length > 50) dropped = history.splice(0, history.length - 50);
     await this.ctx.storage.put("history", history);
+    if (dropped.length) this.ctx.waitUntil(this.pruneDroppedImages(dropped, history));
   }
 
   broadcast(data) {
@@ -868,6 +965,16 @@ export class ChatRoom extends DurableObject {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/upload") {
+      return handleUpload(request, url, env, ctx);
+    }
+
+    const imgMatch = url.pathname.match(/^\/img\/(.+)$/);
+    if (imgMatch) {
+      return handleImage(request, env, imgMatch[1]);
+    }
+
     const match = url.pathname.match(/^\/room\/([^/]+)$/);
 
     if (match) {
@@ -879,13 +986,106 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response(renderPage(), {
+    return new Response(renderPage(Boolean(env.KVAULT_BASE && env.KVAULT_TOKEN)), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   },
 };
 
-function renderPage() {
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+// 免费版 Workers 每次调用上限 50 个子请求，留出余量给 trackImage/其它调用。
+const IMG_PURGE_BATCH = 40;
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+// 浏览器粘贴图片 -> 服务端转发到自建图床。Token 只在这里用到，绝不下发前端。
+// 房间名同时是记账用的 DO 名字，必须与 /room/ 路由一样截断到 32。
+async function handleUpload(request, url, env, ctx) {
+  if (request.method !== "POST") return jsonResponse({ error: "只支持 POST" }, 405);
+
+  const room = (url.searchParams.get("room") || "").trim().slice(0, 32);
+  if (!room) return jsonResponse({ error: "缺少房间名" }, 400);
+
+  // 只接受本站页面发起的上传：挡住任意站点把这里当免费图床。
+  const origin = request.headers.get("Origin");
+  if (!origin) return jsonResponse({ error: "禁止跨站上传" }, 403);
+  let originHost = "";
+  try {
+    originHost = new URL(origin).host;
+  } catch {}
+  if (originHost !== url.host) return jsonResponse({ error: "禁止跨站上传" }, 403);
+
+  const client = createImageClient(env);
+  if (!client.enabled) return jsonResponse({ error: "图床未配置" }, 503);
+
+  const type = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (!isAllowedImageType(type)) return jsonResponse({ error: "不支持的图片类型" }, 415);
+
+  // 先看声明的长度再读 body：缺失/非法长度直接拒，避免按平台上限缓冲。
+  const declared = Number(request.headers.get("Content-Length"));
+  if (!Number.isFinite(declared) || declared <= 0) {
+    return jsonResponse({ error: "缺少合法的 Content-Length" }, 411);
+  }
+  if (declared > MAX_UPLOAD_BYTES) return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
+  if (bytes.byteLength === 0) return jsonResponse({ error: "空文件" }, 400);
+
+  let uploaded;
+  try {
+    uploaded = await client.upload(bytes, type);
+  } catch (err) {
+    return jsonResponse({ error: (err && err.message) || "图床上传失败" }, 502);
+  }
+
+  const tracked = await env.CHAT_ROOM.getByName(room).trackImage(uploaded.id);
+  if (!tracked.ok) {
+    // 记账失败就不要留下孤儿对象。
+    ctx.waitUntil(client.remove(uploaded.id));
+    return jsonResponse({ error: "上传太频繁或图片过多" }, 429);
+  }
+  return jsonResponse({ url: uploaded.url });
+}
+
+// 读取走本站代理：页面只跟自己的 origin 通信，图床地址不外露，
+// 也能补上图床自己发的 no-store 之外我们想要的缓存策略。
+async function handleImage(request, env, rawId) {
+  if (request.method !== "GET") return jsonResponse({ error: "只支持 GET" }, 405);
+
+  let id;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return new Response("not found", { status: 404 });
+  }
+  if (!id || id.length > 512) return new Response("not found", { status: 404 });
+
+  const client = createImageClient(env);
+  if (!client.enabled) return new Response("not found", { status: 404 });
+
+  const upstream = await client.fetchFile(id);
+  if (!upstream || !upstream.ok) return new Response("not found", { status: 404 });
+
+  const type = upstream.headers.get("Content-Type") || "";
+  // 与上传侧同一白名单：image/svg+xml 会在本站 origin 下执行脚本，必须挡掉。
+  if (!isAllowedImageType(type)) return new Response("not found", { status: 404 });
+
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      "Content-Type": type,
+      "Cache-Control": "public, max-age=1800",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function renderPage(imagesEnabled) {
   return `<!doctype html>
 <html lang="zh">
 <head>
@@ -942,6 +1142,7 @@ function renderPage() {
     padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre;
   }
   .msg .body pre code { background: none; padding: 0; font-size: 13px; }
+  .msg .body img { max-width: 100%; max-height: 360px; border-radius: 8px; display: block; margin: 4px 0; }
   .msg .body del { text-decoration: line-through; color: #888; }
   .msg .body hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
   .msg .body a { color: #2f6feb; text-decoration: underline; word-break: break-all; }
@@ -1016,6 +1217,8 @@ function renderPage() {
 // 实测：asset 未命中时请求回落到 Worker 并返回 200 text/html，浏览器报 MIME 错误。
 // 动态 import 失败时 renderMd 保持 null，addChat 退化为纯文本，聊天功能不受影响。
 let renderMd = null;
+// 图床未配置时整块粘贴上传逻辑不启用：粘贴走浏览器默认行为，不发任何请求。
+var imagesEnabled = ${imagesEnabled ? "true" : "false"};
 try {
   ({ renderMd } = await import("/markdown.js"));
 } catch (err) {
@@ -1458,7 +1661,7 @@ try {
     b.className = "body";
     // 全项目唯一允许用 HTML 承载服务端文本的位置。renderMd 先按行识别块级结构
     // （h1-h6/ul/ol/li/pre/blockquote/hr/p），行内容再整体转义后仅对白名单标记
-    // （strong/em/code/del/a）套标签，标签均由常量拼接、无属性入口，
+    // （strong/em/code/del/a/img）套标签，标签均由常量拼接、无属性入口，
     // 故此处 innerHTML 安全。其余位置（昵称、系统消息、牌面等）保持 textContent，勿改。
     // renderMd 为 null 时（见文件顶部动态 import 的降级说明）退化为纯文本，
     // 保证聊天这一核心功能不依赖静态资源能否取到。
@@ -1480,7 +1683,98 @@ try {
     if (wasBottom) scrollToBottom();
   }
 
+  var uploadingImage = false;
+  var MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+  // 压缩：最长边 1600px、WebP。GIF 不压（会丢动画），解码失败就原样上传交给服务端校验。
+  function compressImage(file, quality) {
+    return new Promise(function (resolve) {
+      if (file.type === "image/gif") { resolve(file); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var w = img.naturalWidth || 1;
+          var h = img.naturalHeight || 1;
+          var scale = Math.min(1, 1600 / Math.max(w, h));
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          if (!canvas.toBlob) { resolve(file); return; }
+          canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", quality);
+        } catch (_) {
+          // 上下文创建/绘制失败：原图交给服务端校验，绝不让 Promise 悬着
+          URL.revokeObjectURL(url);
+          resolve(file);
+        }
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  function insertAtCursor(text) {
+    var el = $("text");
+    var start = el.selectionStart == null ? el.value.length : el.selectionStart;
+    var end = el.selectionEnd == null ? el.value.length : el.selectionEnd;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    try { el.selectionStart = el.selectionEnd = start + text.length; } catch (_) {}
+    el.focus();
+  }
+
+  function sendPastedImage(file) {
+    if (uploadingImage) return;
+    uploadingImage = true;
+    $("status").textContent = "图片上传中…";
+    compressImage(file, 0.82)
+      .then(function (blob) {
+        return blob.size > MAX_IMAGE_BYTES ? compressImage(file, 0.6) : blob;
+      })
+      .then(function (blob) {
+        if (blob.size > MAX_IMAGE_BYTES) throw new Error("图片太大（压缩后仍超过 2 MB）");
+        return fetch("/upload?room=" + encodeURIComponent(room), {
+          method: "POST",
+          headers: { "Content-Type": blob.type || "image/webp" },
+          body: blob,
+        });
+      })
+      .then(function (res) {
+        return res.json().catch(function () { return null; }).then(function (data) {
+          if (!res.ok || !data || !data.url) throw new Error((data && data.error) || ("上传失败 " + res.status));
+          return data;
+        });
+      })
+      .then(function (data) {
+        // 不自动发送：插到光标处，用户可以再补一句说明。
+        insertAtCursor("![](" + data.url + ")");
+        $("status").textContent = "";
+      })
+      .catch(function (err) {
+        $("status").textContent = (err && err.message) || "图片上传失败";
+      })
+      .finally(function () { uploadingImage = false; });
+  }
+
+  $("text").addEventListener("paste", function (e) {
+    if (!imagesEnabled) return; // 未配置图床：交给浏览器默认粘贴
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file" && String(items[i].type || "").indexOf("image/") === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          sendPastedImage(file);
+          return;
+        }
+      }
+    }
+  });
+
   function sendMessage() {
+    if (uploadingImage) return;
     var t = $("text").value.trim();
     if (!t || !ws || ws.readyState !== 1) return;
     if (t === "/ddz") {
