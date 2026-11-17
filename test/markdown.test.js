@@ -367,3 +367,40 @@ describe("块内行内代码与占位符", () => {
     expect(renderMd("`0` `0`")).toBe("<p><code>0</code> <code>0</code></p>");
   });
 });
+
+describe("本域图片", () => {
+  const IMG = '<img src="/img/r2-ab_c.png" alt="" loading="lazy" referrerpolicy="no-referrer">';
+
+  it("整行图片渲染为 img", () => {
+    expect(renderMd("![](/img/img%3Aabc)")).toBe(
+      '<p><img src="/img/img%3Aabc" alt="" loading="lazy" referrerpolicy="no-referrer"></p>'
+    );
+  });
+
+  it("行内图片与文字共存", () => {
+    expect(renderMd("看图 ![](/img/r2-ab_c.png) 很好")).toBe("<p>看图 " + IMG + " 很好</p>");
+  });
+
+  it("外部图片仍按文字显示，不加载", () => {
+    const html = renderMd("![](https://e/x.png)");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("![](");
+  });
+
+  it("非本域协议不渲染", () => {
+    const html = renderMd("![](javascript:alert(1))");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a");
+  });
+
+  it("代码内的图片标记保持原样", () => {
+    expect(renderMd("`![](/img/a)`")).toBe("<p><code>![](/img/a)</code></p>");
+    expect(renderMd("```\n![](/img/a)\n```")).toBe("<pre><code>![](/img/a)</code></pre>");
+  });
+
+  it("手写 img 标签被转义", () => {
+    const html = renderMd('<img src=x onerror="alert(1)">');
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+});
