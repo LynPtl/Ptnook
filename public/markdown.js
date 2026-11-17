@@ -9,6 +9,15 @@
 // 早期版本通过 renderMd.toString() 内联注入，导致函数体内不得出现任何嵌套函数
 // （esbuild keepNames 会插入 __name(...)，在内联脚本中 ReferenceError），
 // 块级解析无法实现；迁移到 ES module 后该约束已解除，此处可自由使用辅助函数。
+  // 2b. 本域图片：只认 /img/<id>（由聊天室自己代理），其它 ![]() 一律留作文字。
+  //     这是唯一允许加载图片的入口，也是"不加载外部图片（防 IP 泄露）"的边界：
+  //     src 受字符类限制、alt 已转义，用户文本仍不进属性位置。
+  s = s.replace(
+    /!\[([^\]\n]{0,100})\]\((\/img\/[A-Za-z0-9_.%~-]{1,512})\)/g,
+    (m, alt, src) =>
+      '<img src="' + src + '" alt="' + alt + '" loading="lazy" referrerpolicy="no-referrer">'
+  );
+
 
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
