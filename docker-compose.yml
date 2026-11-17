@@ -1,0 +1,16 @@
+services:
+  chatroom:
+    build: .
+    image: chatroom:local
+    ports:
+      - "8080:8080"
+    environment:
+      # 两者都给了才启用图片功能；留空则聊天/桌游照常，图片关闭。
+      KVAULT_BASE: ${KVAULT_BASE:-}
+      KVAULT_TOKEN: ${KVAULT_TOKEN:-}
+    volumes:
+      - chat_data:/data
+    restart: unless-stopped
+
+volumes:
+  chat_data:

@@ -45,6 +45,24 @@ Workers 与 Durable Objects 的免费额度足够自己人小范围使用。
 > 已知限制：K-Vault 对相同内容做 SHA-256 去重并返回同一个 file id，
 > 两个房间发同一张图时，先散场的房间会把另一房间的图一起删掉。
 
+## Docker 自托管（可选）
+
+不想用 Cloudflare 账号时，可以在任意有 Docker 的机器（NAS / 内网 / VPS）上跑同一份代码：
+
+    KVAULT_BASE=https://your-kvault.pages.dev KVAULT_TOKEN=kvault_xxx docker compose up -d
+
+- 监听 `8080`，房间数据存在命名卷 `chat_data`（容器重建不丢历史）。
+- `KVAULT_*` 也可以不传：图片功能自动关闭，聊天与桌游不受影响。
+- 镜像内部运行的是 `wrangler dev`（miniflare + workerd），**这是 Cloudflare 的本地开发服务器**，
+  不是生产级 Web 服务器：没有 TLS、单进程、没有优雅关机、没有多副本。
+  适合内网或自己人小范围使用；要暴露到公网，请在前面套 Caddy/Nginx 做 TLS，并自行评估风险。
+- 直接用 Dockerfile 手动起：
+
+      docker build -t chatroom:local .
+      docker run -d --name chatroom -p 8080:8080 \
+        -e KVAULT_BASE=https://your-kvault.pages.dev -e KVAULT_TOKEN=kvault_xxx \
+        -v chat_data:/data chatroom:local
+
 ## 用法
 
 - 房间名就是口令：知道房间名的人填入即可进入同一房间。

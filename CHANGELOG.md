@@ -2,6 +2,21 @@
 
 本项目无既有 CHANGELOG，自本次起按版本记录功能变更。
 
+## 2026-11-17 — Docker 自托管（可选）
+
+### 新增
+- `Dockerfile`：`node:22-bookworm-slim` + `wrangler dev` 承载同一份 Worker 代码（workerd 是 glibc 构建，不能用 alpine）。
+- `docker/entrypoint.sh`：把 `KVAULT_BASE`/`KVAULT_TOKEN` 环境变量写成 `.dev.vars`（600），
+  再 `exec wrangler dev --ip 0.0.0.0 --persist-to /data`；缺变量时自动关闭图片功能。
+- `docker-compose.yml`：端口 8080、命名卷 `chat_data`、`restart: unless-stopped`。
+- `.dockerignore`：排除 `node_modules`/`.git`/`.dev.vars`/`docs`/`test` 等。
+- README 新增「Docker 自托管（可选）」。
+
+### 说明
+- 与 Workers 部署共用同一份 `src/` + `public/`，无代码分叉。
+- 镜像内跑的是 Cloudflare 的本地开发服务器：无 TLS、单进程、无优雅关机，
+  定位为内网/自己人使用；不宣告为生产级替代方案。
+
 ## 2026-11-17 — 图片消息（粘贴上传 + 房间级自动删除）
 
 ### 新增

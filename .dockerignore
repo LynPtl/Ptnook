@@ -1,0 +1,10 @@
+node_modules
+.git
+.github
+.wrangler
+.dev.vars
+.superpowers
+docs
+test
+CHANGELOG.md
+*.log
