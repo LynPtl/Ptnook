@@ -1071,3 +1071,14 @@ describe("图片上传与读取路由", () => {
     expect((await SELF.fetch("https://example.com/img/img%3Ahtml")).status).toBe(404);
   });
 });
+
+describe("前端粘贴图片", () => {
+  it("页面注入 imagesEnabled 开关并注册粘贴上传", async () => {
+    const html = await (await SELF.fetch("https://example.com/")).text();
+    expect(html).toContain("var imagesEnabled = true;");
+    expect(html).toContain('addEventListener("paste"');
+    expect(html).toContain("图片上传中…");
+    expect(html).toContain("insertAtCursor");
+    expect(html).toMatch(/\.msg \.body img\s*\{/);
+  });
+});

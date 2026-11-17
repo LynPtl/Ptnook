@@ -962,7 +962,7 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response(renderPage(), {
+    return new Response(renderPage(Boolean(env.KVAULT_BASE && env.KVAULT_TOKEN)), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   },
@@ -1055,7 +1055,7 @@ async function handleImage(request, env, rawId) {
   });
 }
 
-function renderPage() {
+function renderPage(imagesEnabled) {
   return `<!doctype html>
 <html lang="zh">
 <head>
@@ -1112,6 +1112,7 @@ function renderPage() {
     padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre;
   }
   .msg .body pre code { background: none; padding: 0; font-size: 13px; }
+  .msg .body img { max-width: 100%; max-height: 360px; border-radius: 8px; display: block; margin: 4px 0; }
   .msg .body del { text-decoration: line-through; color: #888; }
   .msg .body hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
   .msg .body a { color: #2f6feb; text-decoration: underline; word-break: break-all; }
@@ -1186,6 +1187,8 @@ function renderPage() {
 // 实测：asset 未命中时请求回落到 Worker 并返回 200 text/html，浏览器报 MIME 错误。
 // 动态 import 失败时 renderMd 保持 null，addChat 退化为纯文本，聊天功能不受影响。
 let renderMd = null;
+// 图床未配置时整块粘贴上传逻辑不启用：粘贴走浏览器默认行为，不发任何请求。
+var imagesEnabled = ${imagesEnabled ? "true" : "false"};
 try {
   ({ renderMd } = await import("/markdown.js"));
 } catch (err) {
@@ -1650,7 +1653,92 @@ try {
     if (wasBottom) scrollToBottom();
   }
 
+  var uploadingImage = false;
+  var MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+  // 压缩：最长边 1600px、WebP。GIF 不压（会丢动画），解码失败就原样上传交给服务端校验。
+  function compressImage(file, quality) {
+    return new Promise(function (resolve) {
+      if (file.type === "image/gif") { resolve(file); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || 1;
+        var h = img.naturalHeight || 1;
+        var scale = Math.min(1, 1600 / Math.max(w, h));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        if (!canvas.toBlob) { resolve(file); return; }
+        canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", quality);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  function insertAtCursor(text) {
+    var el = $("text");
+    var start = el.selectionStart == null ? el.value.length : el.selectionStart;
+    var end = el.selectionEnd == null ? el.value.length : el.selectionEnd;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    try { el.selectionStart = el.selectionEnd = start + text.length; } catch (_) {}
+    el.focus();
+  }
+
+  function sendPastedImage(file) {
+    if (uploadingImage) return;
+    uploadingImage = true;
+    $("status").textContent = "图片上传中…";
+    compressImage(file, 0.82)
+      .then(function (blob) {
+        return blob.size > MAX_IMAGE_BYTES ? compressImage(file, 0.6) : blob;
+      })
+      .then(function (blob) {
+        if (blob.size > MAX_IMAGE_BYTES) throw new Error("图片太大（压缩后仍超过 2 MB）");
+        return fetch("/upload?room=" + encodeURIComponent(room), {
+          method: "POST",
+          headers: { "Content-Type": blob.type || "image/webp" },
+          body: blob,
+        });
+      })
+      .then(function (res) {
+        return res.json().catch(function () { return null; }).then(function (data) {
+          if (!res.ok || !data || !data.url) throw new Error((data && data.error) || ("上传失败 " + res.status));
+          return data;
+        });
+      })
+      .then(function (data) {
+        // 不自动发送：插到光标处，用户可以再补一句说明。
+        insertAtCursor("![](" + data.url + ")");
+        $("status").textContent = "";
+      })
+      .catch(function (err) {
+        $("status").textContent = (err && err.message) || "图片上传失败";
+      })
+      .finally(function () { uploadingImage = false; });
+  }
+
+  $("text").addEventListener("paste", function (e) {
+    if (!imagesEnabled) return; // 未配置图床：交给浏览器默认粘贴
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file" && String(items[i].type || "").indexOf("image/") === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          sendPastedImage(file);
+          return;
+        }
+      }
+    }
+  });
+
   function sendMessage() {
+    if (uploadingImage) return;
     var t = $("text").value.trim();
     if (!t || !ws || ws.readyState !== 1) return;
     if (t === "/ddz") {
