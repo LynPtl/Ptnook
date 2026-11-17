@@ -1,5 +1,5 @@
-import { env, SELF, runInDurableObject } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { env, SELF, runInDurableObject, fetchMock } from "cloudflare:test";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 function connect(room, nick) {
   const url = `https://example.com/room/${room}?nick=${encodeURIComponent(nick)}`;
@@ -971,5 +971,103 @@ describe("聊天室图片账本", () => {
       expect(await state.storage.get("img:img:mine")).toBeUndefined();
       expect(await state.storage.get("img:img:forged")).toBeUndefined();
     });
+  });
+});
+
+describe("图片上传与读取路由", () => {
+  beforeEach(() => {
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+  });
+  afterEach(() => {
+    fetchMock.assertNoPendingInterceptors();
+  });
+
+  const post = (url, headers, body) => SELF.fetch(url, { method: "POST", headers, body });
+
+  it("非同源 403、非图片 415、超 2 MiB 413", async () => {
+    const base = "https://example.com/upload?room=img-guard";
+    expect((await post(base, { "Content-Type": "image/webp" }, new Uint8Array([1]))).status).toBe(403);
+    expect(
+      (await post(base, { Origin: "https://evil.com", "Content-Type": "image/webp" }, new Uint8Array([1]))).status
+    ).toBe(403);
+    expect(
+      (await post(base, { Origin: "https://example.com", "Content-Type": "text/plain" }, "hi")).status
+    ).toBe(415);
+    expect(
+      (await post(base, { Origin: "https://example.com", "Content-Type": "image/webp" }, new Uint8Array(2 * 1024 * 1024 + 1))).status
+    ).toBe(413);
+  });
+
+  it("图床上传失败映射为 502", async () => {
+    fetchMock
+      .get("https://kvault.test")
+      .intercept({ path: "/api/v1/upload", method: "POST" })
+      .reply(500, "boom");
+    const res = await post(
+      "https://example.com/upload?room=img-502",
+      { Origin: "https://example.com", "Content-Type": "image/webp" },
+      new Uint8Array([1])
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it("上传成功返回 /img/ 地址并记账", async () => {
+    fetchMock
+      .get("https://kvault.test")
+      .intercept({ path: "/api/v1/upload", method: "POST" })
+      .reply(200, JSON.stringify({ success: true, file: { id: "img:abc" } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    const res = await post(
+      "https://example.com/upload?room=img-route",
+      { Origin: "https://example.com", "Content-Type": "image/webp" },
+      new Uint8Array([1, 2, 3])
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: "/img/img%3Aabc" });
+
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-route"));
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await state.storage.get("img:img:abc")).toBeTypeOf("number");
+    });
+  });
+
+  it("房间名超 32 字符时记账落在截断后的房间 DO", async () => {
+    fetchMock
+      .get("https://kvault.test")
+      .intercept({ path: "/api/v1/upload", method: "POST" })
+      .reply(200, JSON.stringify({ success: true, file: { id: "img:long" } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    const long = "r".repeat(40);
+    const res = await post(
+      "https://example.com/upload?room=" + long,
+      { Origin: "https://example.com", "Content-Type": "image/webp" },
+      new Uint8Array([1])
+    );
+    expect(res.status).toBe(200);
+    const stub = env.CHAT_ROOM.getByName(long.slice(0, 32));
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await state.storage.get("img:img:long")).toBeTypeOf("number");
+    });
+  });
+
+  it("读取代理透传 image/* 并加缓存头，非图片 404", async () => {
+    const upstream = fetchMock.get("https://kvault.test");
+    upstream
+      .intercept({ path: "/file/img%3Aabc", method: "GET" })
+      .reply(200, "BYTES", { headers: { "Content-Type": "image/webp" } });
+    const ok = await SELF.fetch("https://example.com/img/img%3Aabc");
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("Content-Type")).toBe("image/webp");
+    expect(ok.headers.get("Cache-Control")).toContain("max-age=1800");
+    expect(await ok.text()).toBe("BYTES");
+
+    fetchMock
+      .get("https://kvault.test")
+      .intercept({ path: "/file/img%3Ahtml", method: "GET" })
+      .reply(200, "<html>", { headers: { "Content-Type": "text/html" } });
+    expect((await SELF.fetch("https://example.com/img/img%3Ahtml")).status).toBe(404);
   });
 });

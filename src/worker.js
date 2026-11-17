@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
-import { createImageClient, extractImageIds } from "./images.js";
+import { createImageClient, extractImageIds, isAllowedImageType } from "./images.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
 // 注意：不再 import renderMd。前端经 /markdown.js 的 ES module import 引入，
@@ -941,6 +941,16 @@ export class ChatRoom extends DurableObject {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/upload") {
+      return handleUpload(request, url, env, ctx);
+    }
+
+    const imgMatch = url.pathname.match(/^\/img\/(.+)$/);
+    if (imgMatch) {
+      return handleImage(request, env, imgMatch[1]);
+    }
+
     const match = url.pathname.match(/^\/room\/([^/]+)$/);
 
     if (match) {
@@ -957,6 +967,93 @@ export default {
     });
   },
 };
+
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+// 浏览器粘贴图片 -> 服务端转发到自建图床。Token 只在这里用到，绝不下发前端。
+// 房间名同时是记账用的 DO 名字，必须与 /room/ 路由一样截断到 32。
+async function handleUpload(request, url, env, ctx) {
+  if (request.method !== "POST") return jsonResponse({ error: "只支持 POST" }, 405);
+
+  const room = (url.searchParams.get("room") || "").trim().slice(0, 32);
+  if (!room) return jsonResponse({ error: "缺少房间名" }, 400);
+
+  // 只接受本站页面发起的上传：挡住任意站点把这里当免费图床。
+  const origin = request.headers.get("Origin");
+  if (!origin) return jsonResponse({ error: "禁止跨站上传" }, 403);
+  let originHost = "";
+  try {
+    originHost = new URL(origin).host;
+  } catch {}
+  if (originHost !== url.host) return jsonResponse({ error: "禁止跨站上传" }, 403);
+
+  const client = createImageClient(env);
+  if (!client.enabled) return jsonResponse({ error: "图床未配置" }, 503);
+
+  const type = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (!isAllowedImageType(type)) return jsonResponse({ error: "不支持的图片类型" }, 415);
+
+  if (Number(request.headers.get("Content-Length") || 0) > MAX_UPLOAD_BYTES) {
+    return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) return jsonResponse({ error: "图片不能超过 2 MB" }, 413);
+  if (bytes.byteLength === 0) return jsonResponse({ error: "空文件" }, 400);
+
+  let uploaded;
+  try {
+    uploaded = await client.upload(bytes, type);
+  } catch (err) {
+    return jsonResponse({ error: (err && err.message) || "图床上传失败" }, 502);
+  }
+
+  const tracked = await env.CHAT_ROOM.getByName(room).trackImage(uploaded.id);
+  if (!tracked.ok) {
+    // 记账失败就不要留下孤儿对象。
+    ctx.waitUntil(client.remove(uploaded.id));
+    return jsonResponse({ error: "上传太频繁或图片过多" }, 429);
+  }
+  return jsonResponse({ url: uploaded.url });
+}
+
+// 读取走本站代理：页面只跟自己的 origin 通信，图床地址不外露，
+// 也能补上图床自己发的 no-store 之外我们想要的缓存策略。
+async function handleImage(request, env, rawId) {
+  if (request.method !== "GET") return jsonResponse({ error: "只支持 GET" }, 405);
+
+  let id;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return new Response("not found", { status: 404 });
+  }
+  if (!id || id.length > 512) return new Response("not found", { status: 404 });
+
+  const client = createImageClient(env);
+  if (!client.enabled) return new Response("not found", { status: 404 });
+
+  const upstream = await client.fetchFile(id);
+  if (!upstream || !upstream.ok) return new Response("not found", { status: 404 });
+
+  const type = upstream.headers.get("Content-Type") || "";
+  if (!type.startsWith("image/")) return new Response("not found", { status: 404 });
+
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      "Content-Type": type,
+      "Cache-Control": "public, max-age=1800",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
 
 function renderPage() {
   return `<!doctype html>
