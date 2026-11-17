@@ -912,3 +912,64 @@ describe("前端脚本加载降级与交互策略", () => {
     );
   });
 });
+
+describe("聊天室图片账本", () => {
+  it("trackImage 记账，并在 60 秒窗口内限流", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-ledger"));
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await instance.trackImage("img:1")).toEqual({ ok: true });
+      expect(await state.storage.get("img:img:1")).toBeTypeOf("number");
+      for (let i = 2; i <= 20; i++) expect((await instance.trackImage("img:" + i)).ok).toBe(true);
+      expect(await instance.trackImage("img:21")).toEqual({ ok: false, reason: "rate" });
+    });
+  });
+
+  it("账本满 200 张后拒绝新图", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-cap"));
+    await runInDurableObject(stub, async (instance, state) => {
+      const bulk = {};
+      for (let i = 0; i < 200; i++) bulk["img:seed-" + i] = 1;
+      await state.storage.put(bulk);
+      expect(await instance.trackImage("img:new")).toEqual({ ok: false, reason: "full" });
+    });
+  });
+
+  it("alarm 删除账本内的图；失败保留并重试，成功后清账", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-purge"));
+    await runInDurableObject(stub, async (instance, state) => {
+      const removed = [];
+      instance.imageClient = { remove: async (id) => { removed.push(id); return id !== "img:bad"; } };
+      await instance.trackImage("img:ok");
+      await instance.trackImage("img:bad");
+
+      await instance.alarm();
+      // storage.list 按 key 字典序返回，顺序不是契约，只断言集合与结果
+      expect(removed.slice().sort()).toEqual(["img:bad", "img:ok"]);
+      expect(await state.storage.get("img:img:ok")).toBeUndefined();
+      expect(await state.storage.get("img:img:bad")).toBeTypeOf("number");
+      expect(await state.storage.getAlarm()).not.toBeNull();
+
+      instance.imageClient = { remove: async (id) => { removed.push(id); return true; } };
+      await instance.alarm();
+      expect(await state.storage.get("img:img:bad")).toBeUndefined();
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+  });
+
+  it("淘汰消息时只删本房间账本里的图，伪造 id 不删", async () => {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("img-prune"));
+    await runInDurableObject(stub, async (instance, state) => {
+      const removed = [];
+      instance.imageClient = { remove: async (id) => { removed.push(id); return true; } };
+      await instance.trackImage("img:mine");
+      await instance.pruneDroppedImages([
+        { text: "![](/img/img%3Amine)" },
+        { text: "![](/img/img%3Aforged)" },
+        { text: "普通文本" },
+      ]);
+      expect(removed).toEqual(["img:mine"]);
+      expect(await state.storage.get("img:img:mine")).toBeUndefined();
+      expect(await state.storage.get("img:img:forged")).toBeUndefined();
+    });
+  });
+});

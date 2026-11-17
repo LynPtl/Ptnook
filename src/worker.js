@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sanitizeNick, parseInbound, chatMsg, systemMsg, presenceMsg, historyMsg } from "./messages.js";
+import { createImageClient, extractImageIds } from "./images.js";
 import { makeDeck, deal, sortCards, resolveBids, identifyPlay, beats, computeScores, enumerateLegalPlays, pickHint, chooseHint } from "./ddz.js";
 import { makeDeck as makePokerDeck, derivePositions, validateAction, evaluateHand, compareHands, buildPots } from "./holdem.js";
 // 注意：不再 import renderMd。前端经 /markdown.js 的 ES module import 引入，
@@ -9,6 +10,8 @@ export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.ctx = ctx;
+    // 图床客户端：配置全在环境变量里，未配置时 enabled=false，图片功能静默不可用。
+    this.imageClient = createImageClient(env);
     // 从 hibernation 恢复：无需额外 sessions map，用 ctx.getWebSockets() 即可
   }
 
@@ -97,18 +100,88 @@ export class ChatRoom extends DurableObject {
   }
 
   async alarm() {
-    if (this.ctx.getWebSockets().length === 0) {
-      await this.ctx.storage.delete("history");
-      await this.ctx.storage.delete("ddz");
-      await this.ctx.storage.delete("holdem");
+    // 有人已经回来（重连），保留一切，等下一次空闲。
+    if (this.ctx.getWebSockets().length !== 0) return;
+    await this.purgeImages();
+    await this.ctx.storage.delete("history");
+    await this.ctx.storage.delete("ddz");
+    await this.ctx.storage.delete("holdem");
+  }
+
+  // ===== 图片账本 =====
+  // 一图一键（img:<id>）：账本与 rate 分两把键，避免并发 read-modify-write 丢账。
+  // 只记账，不存字节——DO 单 value 上限 128 KiB。
+
+  async trackImage(id) {
+    if (typeof id !== "string" || !id) return { ok: false, reason: "bad" };
+    const now = Date.now();
+    const rate = (await this.ctx.storage.get("imgRate")) || { start: now, n: 0 };
+    if (now - rate.start > 60 * 1000) {
+      rate.start = now;
+      rate.n = 0;
     }
+    if (rate.n >= 20) return { ok: false, reason: "rate" };
+    const existing = await this.ctx.storage.list({ prefix: "img:", limit: 201 });
+    if (existing.size >= 200) return { ok: false, reason: "full" };
+    rate.n += 1;
+    await this.ctx.storage.put({ ["img:" + id]: now, imgRate: rate });
+    return { ok: true };
+  }
+
+  // 消息被 50 条窗口淘汰时调用：只删本房间账本里登记过的 id，
+  // 防止伪造 ![](/img/<别人的id>) 触发跨房间误删。
+  async pruneDroppedImages(items) {
+    const ids = new Set();
+    for (const it of items || []) {
+      for (const id of extractImageIds(it && it.text)) ids.add(id);
+    }
+    for (const id of ids) {
+      const key = "img:" + id;
+      if ((await this.ctx.storage.get(key)) === undefined) continue;
+      await this.ctx.storage.delete(key);
+      try {
+        await this.imageClient.remove(id);
+      } catch {}
+    }
+  }
+
+  // 房间空闲兜底删除。失败的留在账本里，最多重试 2 轮后放弃，
+  // 避免图床长期故障时无限重试。
+  async purgeImages() {
+    const keys = await this.ctx.storage.list({ prefix: "img:" });
+    if (keys.size === 0) return;
+    let failed = 0;
+    for (const key of keys.keys()) {
+      let ok = false;
+      try {
+        ok = await this.imageClient.remove(key.slice(4));
+      } catch {}
+      if (ok) await this.ctx.storage.delete(key);
+      else failed += 1;
+    }
+    if (failed === 0) {
+      await this.ctx.storage.delete("imgAttempts");
+      // 成功即收尾：清掉上一轮失败时设置的 5 分钟重试闹钟。
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const attempts = ((await this.ctx.storage.get("imgAttempts")) || 0) + 1;
+    if (attempts > 2) {
+      const left = await this.ctx.storage.list({ prefix: "img:" });
+      await this.ctx.storage.delete([...left.keys(), "imgAttempts"]);
+      return;
+    }
+    await this.ctx.storage.put("imgAttempts", attempts);
+    await this.ctx.storage.setAlarm(Date.now() + 5 * 60 * 1000);
   }
 
   async appendHistory(item) {
     const history = (await this.ctx.storage.get("history")) || [];
     history.push(item);
-    if (history.length > 50) history.splice(0, history.length - 50);
+    let dropped = [];
+    if (history.length > 50) dropped = history.splice(0, history.length - 50);
     await this.ctx.storage.put("history", history);
+    if (dropped.length) this.ctx.waitUntil(this.pruneDroppedImages(dropped));
   }
 
   broadcast(data) {
